@@ -32,11 +32,10 @@ function formatBytes(value: number) {
 }
 
 function buildMagnet(hash: string, name: string) {
-  const magnet = new URL("magnet:?");
-  magnet.searchParams.set("xt", `urn:btih:${hash}`);
-  magnet.searchParams.set("dn", name);
-  for (const tracker of TRACKERS) magnet.searchParams.append("tr", tracker);
-  return magnet.toString();
+  const params = new URLSearchParams();
+  params.set("dn", name);
+  for (const tracker of TRACKERS) params.append("tr", tracker);
+  return `magnet:?xt=urn:btih:${hash}&${params}`;
 }
 
 async function searchCsv(query: string, page: number) {
