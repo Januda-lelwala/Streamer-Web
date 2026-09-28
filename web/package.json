@@ -31,6 +31,7 @@
     "prebuild": "node scripts/copy-webtorrent.mjs",
     "build": "vite build",
     "start": "wrangler dev --config dist/server/wrangler.json",
+    "predeploy": "node scripts/copy-webtorrent.mjs",
     "deploy": "vinext-cloudflare deploy --config dist/server/wrangler.json"
   }
 }

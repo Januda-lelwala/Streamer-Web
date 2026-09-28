@@ -28,6 +28,8 @@ npm run deploy
 
 The Worker name is set in `wrangler.jsonc`. Change it before deployment if needed. For a Cloudflare Git deployment, set the root directory to `web` and use `npm run deploy` as the deploy command.
 
+The GitHub Actions workflow at `../.github/workflows/deploy-worker.yml` deploys every push to `main`. It requires the repository secrets `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`. The token needs permission to deploy the Worker.
+
 ## How it works
 
 The `/api/search` route queries the same torrent index as the desktop app and falls back to Torrents.csv when that index is unavailable or rate limited. It returns paginated results. WebTorrent runs in the visitor's browser, and its service worker serves video data to the HTML video player. A public Sintel sample is available from the home page.
