@@ -129,7 +129,7 @@ export default function Home() {
       timeoutRef.current = setTimeout(() => {
         if (requestRef.current === request && !torrentRef.current) {
           requestRef.current++;
-          setStreamError("No WebRTC peers supplied torrent metadata. Try opening the magnet in the desktop app.");
+          setStreamError("No WebRTC peer supplied torrent metadata. This result may only have desktop BitTorrent peers; open its magnet in a desktop client below.");
           setStatus("no web peers found");
           client.destroy();
           clientRef.current = null;
@@ -184,7 +184,7 @@ export default function Home() {
         <section className="hero">
           <p className="eyebrow">SEARCH · DISCOVER · WATCH</p>
           <h1>Find a video.<br /><em>Press play.</em></h1>
-          <p className="hero-copy">Search torrents and play WebRTC-ready video directly in your browser. Your Worker handles search; the stream comes from peers.</p>
+          <p className="hero-copy">Search torrents and try browser playback when WebRTC peers are available. Your Worker handles search; the stream comes from peers.</p>
           <form className="search-form" onSubmit={submitSearch}>
             <span className="search-glyph">⌕</span>
             <input aria-label="Search torrents" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search for a movie, show, or video…" maxLength={100} />
@@ -201,13 +201,13 @@ export default function Home() {
           {files.length > 1 && <div className="file-picker"><label htmlFor="video-file">Choose a video file</label><select id="video-file" value={chosen?.name || ""} onChange={(event) => { const file = files.find((item) => item.name === event.target.value); if (file) playFile(file); }}><option value="">Select a file</option>{files.map((file) => <option key={file.name} value={file.name}>{file.name} · {formatBytes(file.length)}</option>)}</select></div>}
           <div className="stream-meta"><span><b>{Math.round(stats.progress)}%</b> downloaded</span><span><b>{formatBytes(stats.downloaded)}</b> received</span><span><b>{formatBytes(stats.speed)}/s</b> speed</span><span><b>{stats.peers}</b> web peers</span></div>
           <div className="progress-track"><div style={{ width: `${Math.max(0, Math.min(stats.progress, 100))}%` }} /></div>
-          <a className="magnet-link" href={active.magnet}>Open magnet in desktop app ↗</a>
+          <a className="magnet-link" href={active.magnet}>Open magnet in desktop client ↗</a>
         </section>}
 
         <section className="results-panel">
           <div className="section-heading"><div><p className="eyebrow">EXPLORE</p><h2>{search ? `Results for “${search.query}”` : "Ready when you are"}</h2></div><span className="count">{search ? `${search.totalResults} results` : "TRY THE DEMO"}</span></div>
           {!search ? <div className="empty"><span className="empty-symbol">▶</span><h3>Your next watch starts here.</h3><p>Search above, paste a magnet, or try a WebRTC-ready sample.</p><button className="secondary-button" onClick={() => void start(demo)}>Play the Sintel demo →</button></div> : search.results.length ? <>
-            <div className="result-list">{search.results.map((result) => <article className="result" key={result.magnet}><div className="result-icon">▶</div><div className="result-main"><h3 title={result.name}>{result.name}</h3><p>{result.size} <span>·</span> {result.files ? `${result.files} file${result.files === 1 ? "" : "s"}` : "file count unknown"} <span>·</span> {result.seeds} index seeds</p></div><button onClick={() => void start(result)}>Stream <span>→</span></button></article>)}</div>
+            <div className="result-list">{search.results.map((result) => <article className="result" key={result.magnet}><div className="result-icon">▶</div><div className="result-main"><h3 title={result.name}>{result.name}</h3><p>{result.size} <span>·</span> {result.files ? `${result.files} file${result.files === 1 ? "" : "s"}` : "file count unknown"} <span>·</span> {result.seeds} index seeds</p></div><div className="result-actions"><button onClick={() => void start(result)}>Try browser playback <span>→</span></button><a href={result.magnet}>Open magnet ↗</a></div></article>)}</div>
             {search.totalPages > 1 && <div className="pagination"><button disabled={search.page <= 1 || searching} onClick={() => void doSearch(search.page - 1, search.query)}>← Previous</button><span>Page {search.page} of {search.totalPages}</span><button disabled={search.page >= search.totalPages || searching} onClick={() => void doSearch(search.page + 1, search.query)}>Next →</button></div>}
           </> : <div className="empty"><span className="empty-symbol">⌕</span><h3>No results found</h3><p>Try a different search term.</p></div>}
         </section>

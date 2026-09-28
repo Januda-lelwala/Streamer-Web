@@ -48,6 +48,9 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .result-main h3 { margin: 0 0 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
 .result-main p { margin: 0; color: #849caf; font-size: 12px; }
 .result-main p span { padding: 0 6px; color: #4a6377; }
+.result-actions { display: flex; align-items: center; gap: 12px; }
+.result-actions a { color: #89dff5; font-size: 12px; font-weight: 700; text-decoration: none; white-space: nowrap; }
+.result-actions a:hover { text-decoration: underline; }
 .result button, .pagination button, .close-button { border: 1px solid #3b5a70; border-radius: 7px; color: #89dff5; background: #1a3144; padding: 9px 14px; font-size: 12px; font-weight: 800; white-space: nowrap; }
 .result button:hover, .pagination button:hover:not(:disabled), .close-button:hover { background: #244c61; }
 .result button span { padding-left: 10px; }
@@ -64,4 +67,4 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .file-picker select { width: 100%; padding: 10px; color: #eaf0f7; background: #1b3041; border: 1px solid #3b5a70; border-radius: 6px; }
 .error { max-width: 790px; margin: 15px auto; color: #ffb6b6; font-size: 13px; }
 .note { max-width: 770px; margin: 22px auto 0; color: #71869c; font-size: 12px; line-height: 1.6; text-align: center; }
-@media (max-width: 650px) { .shell { padding: 0 16px 40px; } .topbar { height: 72px; } .top-pill { font-size: 0; padding: 9px; } .hero { padding: 65px 0 53px; } .hero h1 { letter-spacing: -2.5px; } .hero-copy { font-size: 14px; } .search-form { gap: 6px; height: 58px; padding-left: 12px; } .search-form button { padding: 0 13px; gap: 8px; } .results-panel, .player-panel { padding: 17px; } .result { padding: 11px; gap: 10px; } .result-icon { display: none; } .result button { padding: 9px; } .result button span { display: none; } .section-heading h2 { font-size: 17px; } .count { font-size: 10px; } }
+@media (max-width: 650px) { .shell { padding: 0 16px 40px; } .topbar { height: 72px; } .top-pill { font-size: 0; padding: 9px; } .hero { padding: 65px 0 53px; } .hero h1 { letter-spacing: -2.5px; } .hero-copy { font-size: 14px; } .search-form { gap: 6px; height: 58px; padding-left: 12px; } .search-form button { padding: 0 13px; gap: 8px; } .results-panel, .player-panel { padding: 17px; } .result { padding: 11px; gap: 10px; flex-wrap: wrap; } .result-icon { display: none; } .result-actions { width: 100%; justify-content: flex-end; } .result button { padding: 9px; } .result button span { display: none; } .section-heading h2 { font-size: 17px; } .count { font-size: 10px; } }
