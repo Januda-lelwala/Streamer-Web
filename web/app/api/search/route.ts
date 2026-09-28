@@ -13,10 +13,59 @@ type ApibayItem = {
   num_files?: string;
 };
 
+type CsvItem = {
+  name?: string;
+  infohash?: string;
+  size_bytes?: number;
+  seeders?: number;
+  leechers?: number;
+};
+
+type CsvResponse = {
+  torrents?: CsvItem[];
+};
+
 function formatBytes(value: number) {
   if (!Number.isFinite(value) || value <= 0) return "0 B";
   const unit = Math.min(Math.floor(Math.log(value) / Math.log(1024)), 4);
   return `${(value / 1024 ** unit).toFixed(unit ? 1 : 0)} ${["B", "KB", "MB", "GB", "TB"][unit]}`;
+}
+
+function buildMagnet(hash: string, name: string) {
+  const magnet = new URL("magnet:?");
+  magnet.searchParams.set("xt", `urn:btih:${hash}`);
+  magnet.searchParams.set("dn", name);
+  for (const tracker of TRACKERS) magnet.searchParams.append("tr", tracker);
+  return magnet.toString();
+}
+
+async function searchCsv(query: string, page: number) {
+  const url = new URL("https://torrents-csv.com/service/search");
+  url.searchParams.set("q", query);
+  url.searchParams.set("size", "100");
+  const upstream = await fetch(url, { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(10000) });
+  if (!upstream.ok) throw new Error(`Fallback search provider returned ${upstream.status}`);
+  const data: CsvResponse = await upstream.json();
+  if (!Array.isArray(data.torrents)) throw new Error("Fallback search provider sent an invalid response");
+
+  const results = data.torrents
+    .filter((item) => item && /^[a-f\d]{40}$/i.test(item.infohash ?? "") && item.name)
+    .map((item) => ({
+      name: item.name!,
+      size: formatBytes(Number(item.size_bytes)),
+      seeds: Number(item.seeders) || 0,
+      peers: Number(item.leechers) || 0,
+      files: 0,
+      magnet: buildMagnet(item.infohash!, item.name!),
+    }));
+  const totalResults = results.length;
+  return {
+    results: results.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE),
+    page,
+    totalPages: Math.ceil(totalResults / PAGE_SIZE),
+    totalResults,
+    query,
+  };
 }
 
 export async function GET(request: Request) {
@@ -28,28 +77,30 @@ export async function GET(request: Request) {
   }
 
   try {
-    const upstream = await fetch(`https://apibay.org/q.php?q=${encodeURIComponent(query)}&cat=0`, {
-      headers: { Accept: "application/json" },
-      signal: AbortSignal.timeout(10000),
-    });
-    if (!upstream.ok) throw new Error(`Search provider returned ${upstream.status}`);
-    const data: unknown = await upstream.json();
-    if (!Array.isArray(data)) throw new Error("Search provider sent an invalid response");
+    let data: unknown;
+    try {
+      const upstream = await fetch(`https://apibay.org/q.php?q=${encodeURIComponent(query)}&cat=0`, {
+        headers: { Accept: "application/json" },
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!upstream.ok) throw new Error(`Search provider returned ${upstream.status}`);
+      data = await upstream.json();
+      if (!Array.isArray(data)) throw new Error("Search provider sent an invalid response");
+    } catch (error) {
+      console.warn("Primary search provider failed:", error);
+      return Response.json(await searchCsv(query, rawPage), { headers: { "Cache-Control": "public, max-age=60" } });
+    }
 
     const results = (data as ApibayItem[])
       .filter((item) => item && /^[a-f\d]{40}$/i.test(item.info_hash ?? "") && !/^0+$/.test(item.info_hash ?? "") && item.name !== "No results returned")
       .map((item) => {
-        const magnet = new URL("magnet:?");
-        magnet.searchParams.set("xt", `urn:btih:${item.info_hash}`);
-        magnet.searchParams.set("dn", item.name ?? "Untitled torrent");
-        for (const tracker of TRACKERS) magnet.searchParams.append("tr", tracker);
         return {
           name: item.name ?? "Untitled torrent",
           size: formatBytes(Number(item.size)),
           seeds: Number(item.seeders) || 0,
           peers: Number(item.leechers) || 0,
           files: Number(item.num_files) || 0,
-          magnet: magnet.toString(),
+          magnet: buildMagnet(item.info_hash!, item.name ?? "Untitled torrent"),
         };
       });
 
