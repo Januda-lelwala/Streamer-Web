@@ -8,6 +8,8 @@ type TorrentFile = { name: string; length: number; select(): void; deselect(): v
 type Torrent = { files: TorrentFile[]; progress: number; downloaded: number; downloadSpeed: number; numPeers: number; on(event: string, handler: (error?: Error) => void): void };
 type TorrentClient = { add(magnet: string, callback: (torrent: Torrent) => void): void; on(event: string, handler: (error: Error) => void): void; createServer(options: { controller: ServiceWorkerRegistration }): void; destroy(): void };
 type WebTorrentConstructor = new () => TorrentClient;
+type PlayableFile = { name: string; length: number; source: "browser"; file: TorrentFile } | { name: string; length: number; source: "backend"; hash: string; index: number };
+type BackendSnapshot = { infoHash: string; status: "loading" | "ready" | "error"; error: string | null; files: { index: number; name: string; length: number }[]; progress: number; downloaded: number; speed: number; peers: number };
 
 const DEMO_MAGNET = "magnet:?xt=urn:btih:08ada5a7a6183aae1e09d831df6748d566095a10&dn=Sintel&tr=wss%3A%2F%2Ftracker.btorrent.xyz&tr=wss%3A%2F%2Ftracker.openwebtorrent.com&ws=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2F&xs=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2Fsintel.torrent";
 const videoExt = /\.(mp4|m4v|webm|ogv|mov|mkv)$/i;
@@ -35,8 +37,8 @@ export default function Home() {
   const [active, setActive] = useState<Result | null>(null);
   const [status, setStatus] = useState("idle");
   const [streamError, setStreamError] = useState("");
-  const [files, setFiles] = useState<TorrentFile[]>([]);
-  const [chosen, setChosen] = useState<TorrentFile | null>(null);
+  const [files, setFiles] = useState<PlayableFile[]>([]);
+  const [chosen, setChosen] = useState<PlayableFile | null>(null);
   const [stats, setStats] = useState({ progress: 0, downloaded: 0, speed: 0, peers: 0 });
   const videoRef = useRef<HTMLVideoElement>(null);
   const clientRef = useRef<TorrentClient | null>(null);
@@ -87,14 +89,18 @@ export default function Home() {
 
   function submitSearch(event: FormEvent) { event.preventDefault(); void doSearch(); }
 
-  function playFile(file: TorrentFile) {
-    if (!torrentRef.current || !videoRef.current) return;
-    for (const candidate of torrentRef.current.files) candidate === file ? candidate.select() : candidate.deselect();
+  function playFile(file: PlayableFile) {
+    if (!videoRef.current) return;
+    if (file.source === "browser") {
+      if (!torrentRef.current) return;
+      for (const candidate of torrentRef.current.files) candidate === file.file ? candidate.select() : candidate.deselect();
+    }
     setChosen(file);
     setStatus("buffering");
     setStreamError("");
     try {
-      file.streamTo(videoRef.current);
+      if (file.source === "backend") videoRef.current.src = `/api/torrents/${file.hash}/files/${file.index}`;
+      else file.file.streamTo(videoRef.current);
       void videoRef.current.play().then(() => setStatus("playing")).catch(() => setStatus("ready — press play"));
     } catch (error) {
       setStreamError(error instanceof Error ? error.message : "This file cannot play in your browser.");
@@ -106,6 +112,11 @@ export default function Home() {
     stop();
     const request = requestRef.current;
     setActive(result);
+    setStatus("connecting to torrent peers");
+    if (result.magnet !== DEMO_MAGNET) {
+      const backendStarted = await startBackend(result, request);
+      if (backendStarted || requestRef.current !== request) return;
+    }
     setStatus("connecting to web peers");
     try {
       const Constructor = await loadWebTorrent();
@@ -140,7 +151,7 @@ export default function Home() {
         if (timeoutRef.current) clearTimeout(timeoutRef.current);
         torrentRef.current = torrent;
         for (const file of torrent.files) file.deselect();
-        const videos = torrent.files.filter((file) => videoExt.test(file.name)).sort((a, b) => b.length - a.length);
+        const videos: PlayableFile[] = torrent.files.filter((file) => videoExt.test(file.name)).sort((a, b) => b.length - a.length).map((file) => ({ name: file.name, length: file.length, source: "browser", file }));
         setFiles(videos);
         if (!videos.length) {
           setStatus("no video files");
@@ -154,7 +165,7 @@ export default function Home() {
           speed: torrent.downloadSpeed,
           peers: torrent.numPeers,
         }), 1000);
-        if (videos.length === 1) playFileFromTorrent(torrent, videos[0]);
+        if (videos.length === 1) { torrentRef.current = torrent; playFile(videos[0]); }
       });
     } catch (error) {
       if (requestRef.current === request) {
@@ -166,9 +177,64 @@ export default function Home() {
     }
   }
 
-  function playFileFromTorrent(torrent: Torrent, file: TorrentFile) {
-    torrentRef.current = torrent;
-    playFile(file);
+  async function startBackend(result: Result, request: number): Promise<boolean> {
+    const hash = new URL(result.magnet).searchParams.get("xt")?.match(/^urn:btih:([a-f\d]{40})$/i)?.[1];
+    if (!hash) return false;
+    try {
+      const response = await fetch("/api/torrents", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ infoHash: hash }) });
+      if (requestRef.current !== request) return true;
+      if (response.status === 503 || response.status === 502) return false;
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not connect to torrent backend.");
+      setStatus("fetching torrent metadata");
+      let ready = false;
+      const update = (snapshot: BackendSnapshot) => {
+        if (requestRef.current !== request) return;
+        if (snapshot.status === "error") {
+          if (intervalRef.current) clearInterval(intervalRef.current);
+          intervalRef.current = null;
+          setStreamError(snapshot.error || "Torrent backend could not connect to peers.");
+          setStatus("connection failed");
+          return;
+        }
+        setStats({ progress: snapshot.progress * 100, downloaded: snapshot.downloaded, speed: snapshot.speed, peers: snapshot.peers });
+        if (snapshot.status !== "ready" || ready) return;
+        ready = true;
+        const videos: PlayableFile[] = snapshot.files.filter((file) => videoExt.test(file.name)).sort((a, b) => b.length - a.length).map((file) => ({ ...file, source: "backend", hash: snapshot.infoHash }));
+        setFiles(videos);
+        if (!videos.length) {
+          setStatus("no video files");
+          setStreamError("This torrent does not contain a recognized video file.");
+        } else {
+          setStatus(videos.length > 1 ? "choose a video" : "buffering");
+          if (videos.length === 1) playFile(videos[0]);
+        }
+      };
+      update(data as BackendSnapshot);
+      if ((data as BackendSnapshot).status === "error") return true;
+      intervalRef.current = setInterval(async () => {
+        if (requestRef.current !== request) return;
+        try {
+          const statusResponse = await fetch(`/api/torrents/${hash}`);
+          const snapshot = await statusResponse.json();
+          if (!statusResponse.ok) throw new Error(snapshot.error || "Torrent backend lost the stream.");
+          update(snapshot);
+        } catch (error) {
+          if (requestRef.current !== request) return;
+          if (intervalRef.current) clearInterval(intervalRef.current);
+          intervalRef.current = null;
+          setStreamError(error instanceof Error ? error.message : "Torrent backend is unavailable.");
+          setStatus("connection failed");
+        }
+      }, 2000);
+      return true;
+    } catch (error) {
+      if (requestRef.current === request) {
+        setStreamError(error instanceof Error ? error.message : "Could not start stream.");
+        setStatus("connection failed");
+      }
+      return true;
+    }
   }
 
   const demo: Result = { name: "Sintel — WebTorrent demo", size: "Public demo", seeds: 0, peers: 0, files: 1, magnet: DEMO_MAGNET };
@@ -184,7 +250,7 @@ export default function Home() {
         <section className="hero">
           <p className="eyebrow">SEARCH · DISCOVER · WATCH</p>
           <h1>Find a video.<br /><em>Press play.</em></h1>
-          <p className="hero-copy">Search torrents and try browser playback when WebRTC peers are available. Your Worker handles search; the stream comes from peers.</p>
+          <p className="hero-copy">Search torrents and try browser playback. A connected stream server can reach ordinary BitTorrent peers; otherwise playback needs WebRTC peers.</p>
           <form className="search-form" onSubmit={submitSearch}>
             <span className="search-glyph">⌕</span>
             <input aria-label="Search torrents" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search for a movie, show, or video…" maxLength={100} />
@@ -198,8 +264,8 @@ export default function Home() {
           <div className="section-heading"><div><p className="eyebrow">NOW STREAMING</p><h2>{active.name}</h2></div><button className="close-button" onClick={stop}>Stop stream ✕</button></div>
           <div className="video-wrap"><video ref={videoRef} controls playsInline onError={() => { setStreamError("This video format or codec is not supported by your browser."); setStatus("playback unavailable"); }} /><div className="video-status">{status}</div></div>
           {streamError && <p className="error" role="alert">{streamError}</p>}
-          {files.length > 1 && <div className="file-picker"><label htmlFor="video-file">Choose a video file</label><select id="video-file" value={chosen?.name || ""} onChange={(event) => { const file = files.find((item) => item.name === event.target.value); if (file) playFile(file); }}><option value="">Select a file</option>{files.map((file) => <option key={file.name} value={file.name}>{file.name} · {formatBytes(file.length)}</option>)}</select></div>}
-          <div className="stream-meta"><span><b>{Math.round(stats.progress)}%</b> downloaded</span><span><b>{formatBytes(stats.downloaded)}</b> received</span><span><b>{formatBytes(stats.speed)}/s</b> speed</span><span><b>{stats.peers}</b> web peers</span></div>
+          {files.length > 1 && <div className="file-picker"><label htmlFor="video-file">Choose a video file</label><select id="video-file" value={chosen ? String(files.indexOf(chosen)) : ""} onChange={(event) => { const file = files[Number(event.target.value)]; if (file) playFile(file); }}><option value="">Select a file</option>{files.map((file, index) => <option key={`${file.name}-${index}`} value={index}>{file.name} · {formatBytes(file.length)}</option>)}</select></div>}
+          <div className="stream-meta"><span><b>{Math.round(stats.progress)}%</b> downloaded</span><span><b>{formatBytes(stats.downloaded)}</b> received</span><span><b>{formatBytes(stats.speed)}/s</b> speed</span><span><b>{stats.peers}</b> peers</span></div>
           <div className="progress-track"><div style={{ width: `${Math.max(0, Math.min(stats.progress, 100))}%` }} /></div>
           <a className="magnet-link" href={active.magnet}>Open magnet in desktop client ↗</a>
         </section>}
@@ -211,7 +277,7 @@ export default function Home() {
             {search.totalPages > 1 && <div className="pagination"><button disabled={search.page <= 1 || searching} onClick={() => void doSearch(search.page - 1, search.query)}>← Previous</button><span>Page {search.page} of {search.totalPages}</span><button disabled={search.page >= search.totalPages || searching} onClick={() => void doSearch(search.page + 1, search.query)}>Next →</button></div>}
           </> : <div className="empty"><span className="empty-symbol">⌕</span><h3>No results found</h3><p>Try a different search term.</p></div>}
         </section>
-        <p className="note">Browser playback needs WebRTC peers and a video format your browser can play. Index seed counts include desktop peers. Only stream content you have permission to access.</p>
+        <p className="note">Without a connected stream server, playback needs WebRTC peers. Videos also need a format your browser can play. Only stream content you have permission to access.</p>
       </main>
     </div>
   );

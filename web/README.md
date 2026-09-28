@@ -32,8 +32,10 @@ The GitHub Actions workflow at `../.github/workflows/deploy-worker.yml` deploys 
 
 ## How it works
 
-The `/api/search` route queries the same torrent index as the desktop app and falls back to Torrents.csv when that index is unavailable or rate limited. It returns paginated results. WebTorrent runs in the visitor's browser, and its service worker serves video data to the HTML video player. A public Sintel sample is available from the home page.
+The `/api/search` route queries the same torrent index as the desktop app and falls back to Torrents.csv when that index is unavailable or rate limited. It returns paginated results. A public Sintel sample is available from the home page.
 
-Browser peers use WebRTC, so ordinary BitTorrent seed counts do not guarantee playback. A torrent needs a WebRTC-capable seed or a WebTorrent web seed. The video must also use a codec supported by the visitor's browser. The page offers a magnet link for a desktop torrent client when browser playback is unavailable. The Cloudflare Worker does not download, store, or relay torrent video.
+When a separate [Node torrent backend](../backend/README.md) is configured, the Worker proxies metadata and video range requests to it. The backend connects to ordinary BitTorrent peers and streams video over HTTP. Set `TORRENT_BACKEND_URL` to its HTTPS origin and `TORRENT_BACKEND_TOKEN` to the same long random token configured on the backend. Store both as Worker secrets. The GitHub Actions deploy keeps existing Worker secrets, so future pushes continue to use the backend.
+
+Without the backend, WebTorrent runs in the visitor's browser. Browser peers use WebRTC, so ordinary BitTorrent seed counts do not guarantee playback. A torrent needs a WebRTC-capable seed or a WebTorrent web seed. In both modes, the video must use a codec supported by the visitor's browser. The page offers a magnet link for a desktop torrent client when playback is unavailable.
 
 Only search for and stream content you have permission to access.
