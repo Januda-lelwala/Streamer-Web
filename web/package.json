@@ -1,0 +1,36 @@
+{
+  "name": "web",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "npm@10.9.8",
+  "dependencies": {
+    "@vinext/cloudflare": "^1.0.0-beta.11",
+    "react": "latest",
+    "react-dom": "latest",
+    "react-server-dom-webpack": "^19.3.0",
+    "vinext": "^1.0.0-beta.13",
+    "webtorrent": "^3.0.21"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.61.0",
+    "@tailwindcss/postcss": "latest",
+    "@types/node": "latest",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "@vitejs/plugin-react": "^6.1.1",
+    "@vitejs/plugin-rsc": "^0.5.35",
+    "tailwindcss": "latest",
+    "typescript": "latest",
+    "vite": "^8.3.1",
+    "wrangler": "^4.142.0"
+  },
+  "type": "module",
+  "scripts": {
+    "predev": "node scripts/copy-webtorrent.mjs",
+    "dev": "vite dev",
+    "prebuild": "node scripts/copy-webtorrent.mjs",
+    "build": "vite build",
+    "start": "wrangler dev --config dist/server/wrangler.json",
+    "deploy": "vinext-cloudflare deploy --config dist/server/wrangler.json"
+  }
+}

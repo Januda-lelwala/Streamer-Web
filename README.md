@@ -1,5 +1,7 @@
 # Streamer (Tauri)
 
+The Next.js web app for Cloudflare Workers lives in [`web/`](web/README.md). The desktop app remains in the repository root.
+
 A desktop application for searching torrents and streaming them in real time
 to VLC while they download. This is a **Tauri** rewrite of the original
 [Electron app](https://github.com/Januda-lelwala/TorrentStreamer) — the same
