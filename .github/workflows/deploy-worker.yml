@@ -56,7 +56,7 @@ jobs:
           sudo ln -sfn "$release" /opt/streamer-backend/current.next
           sudo mv -Tf /opt/streamer-backend/current.next /opt/streamer-backend/current
           sudo systemctl restart streamer-backend
-          if ! curl --fail --silent --show-error --retry 8 --retry-delay 2 http://127.0.0.1:3001/ -o /dev/null; then
+          if ! curl --fail --silent --show-error --retry 12 --retry-delay 2 --retry-connrefused http://127.0.0.1:3001/ -o /dev/null; then
             sudo ln -sfn "$previous" /opt/streamer-backend/current.next
             sudo mv -Tf /opt/streamer-backend/current.next /opt/streamer-backend/current
             sudo systemctl restart streamer-backend
