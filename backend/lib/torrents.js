@@ -10,8 +10,8 @@ const TRACKERS = [
 const METADATA_TIMEOUT_MS = 60000;
 const IDLE_MS = 30 * 60 * 1000;
 const ERROR_MS = 2 * 60 * 1000;
-const MAX_TORRENTS = 3;
-const MAX_BYTES = 20 * 1024 ** 3;
+const MAX_TORRENTS = Number(process.env.MAX_ACTIVE_TORRENTS) || 3;
+const MAX_BYTES = Number(process.env.MAX_TORRENT_BYTES) || 20 * 1024 ** 3;
 
 function createState() {
   const client = new WebTorrent({ natUpnp: false, natPmp: false, lsd: false, maxConns: 40 });
@@ -68,7 +68,7 @@ export function addTorrent(hash) {
       const totalBytes = readyTorrent.files.reduce((sum, file) => sum + file.length, 0);
       if (totalBytes > MAX_BYTES) {
         entry.status = "error";
-        entry.error = "Torrent exceeds the server's 20 GB limit.";
+        entry.error = `Torrent exceeds the server's ${Math.round(MAX_BYTES / 1024 ** 3)} GB limit.`;
         void state.client.remove(readyTorrent, { destroyStore: true }).catch(console.error);
         entry.torrent = null;
         return;

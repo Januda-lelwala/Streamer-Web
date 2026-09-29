@@ -28,6 +28,42 @@ jobs:
           cache-dependency-path: backend/package-lock.json
       - run: npm ci
       - run: npm run build
+      - name: Package backend
+        run: |
+          mkdir -p .next/standalone/.next
+          cp -a .next/static .next/standalone/.next/static
+          tar -czf "$RUNNER_TEMP/backend.tar.gz" -C .next/standalone .
+      - name: Configure SSH
+        env:
+          DEPLOY_KEY: ${{ secrets.STREAMER_VPS_DEPLOY_KEY }}
+        run: |
+          test -n "$DEPLOY_KEY"
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_KEY" > "$HOME/.ssh/streamer_deploy"
+          chmod 600 "$HOME/.ssh/streamer_deploy"
+          ssh-keyscan -T 15 -t ed25519 140.245.195.5 > "$HOME/.ssh/known_hosts"
+          test "$(ssh-keygen -lf "$HOME/.ssh/known_hosts" | awk '{print $2}')" = 'SHA256:2bmFX4IfXe6kwDd7Zjvqi7y4H3rq/6wF/To68iO3+dc'
+      - name: Deploy backend to VPS
+        run: |
+          scp -i "$HOME/.ssh/streamer_deploy" "$RUNNER_TEMP/backend.tar.gz" opc@140.245.195.5:/tmp/streamer-backend-${GITHUB_SHA}.tar.gz
+          ssh -i "$HOME/.ssh/streamer_deploy" opc@140.245.195.5 "bash -s -- '$GITHUB_SHA'" <<'SCRIPT'
+          set -euo pipefail
+          revision="$1"
+          release="/opt/streamer-backend/releases/$revision"
+          previous="$(readlink -f /opt/streamer-backend/current)"
+          sudo install -d -m 755 "$release"
+          sudo tar -xzf "/tmp/streamer-backend-$revision.tar.gz" -C "$release"
+          sudo ln -sfn "$release" /opt/streamer-backend/current.next
+          sudo mv -Tf /opt/streamer-backend/current.next /opt/streamer-backend/current
+          sudo systemctl restart streamer-backend
+          if ! curl --fail --silent --show-error --retry 8 --retry-delay 2 http://127.0.0.1:3001/ -o /dev/null; then
+            sudo ln -sfn "$previous" /opt/streamer-backend/current.next
+            sudo mv -Tf /opt/streamer-backend/current.next /opt/streamer-backend/current
+            sudo systemctl restart streamer-backend
+            exit 1
+          fi
+          rm -f "/tmp/streamer-backend-$revision.tar.gz"
+          SCRIPT
 
   deploy:
     needs: build-backend
