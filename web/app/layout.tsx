@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Streamer — web",
-  description: "Search torrents and stream WebRTC-ready video in your browser.",
+  description: "Search torrents and stream video through a connected torrent backend.",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

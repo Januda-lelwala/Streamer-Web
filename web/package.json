@@ -8,8 +8,7 @@
     "react": "latest",
     "react-dom": "latest",
     "react-server-dom-webpack": "^19.3.0",
-    "vinext": "^1.0.0-beta.13",
-    "webtorrent": "^3.0.21"
+    "vinext": "^1.0.0-beta.13"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "^1.61.0",
@@ -26,12 +25,9 @@
   },
   "type": "module",
   "scripts": {
-    "predev": "node scripts/copy-webtorrent.mjs",
     "dev": "vite dev",
-    "prebuild": "node scripts/copy-webtorrent.mjs",
     "build": "vite build",
     "start": "wrangler dev --config dist/server/wrangler.json",
-    "predeploy": "node scripts/copy-webtorrent.mjs",
     "deploy": "vinext-cloudflare deploy --config dist/server/wrangler.json"
   }
 }
