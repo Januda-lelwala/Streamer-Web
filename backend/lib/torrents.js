@@ -50,8 +50,14 @@ export function addTorrent(hash) {
     existing.lastAccess = Date.now();
     return serialize(existing);
   }
-  if ([...state.entries.values()].filter((entry) => entry.status !== "error").length >= MAX_TORRENTS) {
-    throw Object.assign(new Error("The stream server is busy. Try again later."), { status: 503 });
+  const active = [...state.entries.values()].filter((entry) => entry.status !== "error");
+  if (active.length >= MAX_TORRENTS) {
+    const replaceable = active.filter((entry) => entry.status === "ready" && entry.activeStreams === 0)
+      .sort((a, b) => a.lastAccess - b.lastAccess)[0];
+    if (!replaceable) {
+      throw Object.assign(new Error("The stream server is busy. Try again later."), { status: 503 });
+    }
+    removeTorrent(state, replaceable.hash);
   }
   const entry = { hash, status: "loading", error: null, torrent: null, activeStreams: 0, lastAccess: Date.now(), timeout: null };
   state.entries.set(hash, entry);
@@ -104,6 +110,7 @@ export function getTorrent(hash) {
   if (!state) return null;
   const entry = state.entries.get(hash.toLowerCase());
   if (!entry) return null;
+  entry.lastAccess = Date.now();
   return entry;
 }
 

@@ -51,6 +51,7 @@ jobs:
           revision="$1"
           release="/opt/streamer-backend/releases/$revision"
           previous="$(readlink -f /opt/streamer-backend/current)"
+          sudo sed -i 's/^MAX_ACTIVE_TORRENTS=.*/MAX_ACTIVE_TORRENTS=2/' /etc/streamer-backend.env
           sudo install -d -m 755 "$release"
           sudo tar -xzf "/tmp/streamer-backend-$revision.tar.gz" -C "$release"
           sudo ln -sfn "$release" /opt/streamer-backend/current.next
