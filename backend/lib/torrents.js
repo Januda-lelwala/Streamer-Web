@@ -120,7 +120,7 @@ export function serialize(entry) {
     infoHash: entry.hash,
     status: entry.status,
     error: entry.error,
-    files: torrent?.files.map((file, index) => ({ index, name: file.name, length: file.length, type: file.type })) ?? [],
+    files: torrent?.files.map((file, index) => ({ index, name: file.name, path: file.path, length: file.length, type: file.type })) ?? [],
     progress: torrent?.progress ?? 0,
     downloaded: torrent?.downloaded ?? 0,
     speed: torrent?.downloadSpeed ?? 0,
