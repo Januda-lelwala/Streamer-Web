@@ -28,7 +28,7 @@ In GitHub **Settings → Secrets and variables → Actions**, add these reposito
 | `STREAMER_VPS_DEPLOY_KEY` | Private SSH key whose public half is in the login user's `~/.ssh/authorized_keys`. |
 | `STREAMER_VPS_HOST_FINGERPRINT` | The server's ED25519 host key fingerprint, such as `SHA256:...`. Read it from the VPS provider console with `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` rather than accepting a key from the network. |
 | `STREAMER_BACKEND_TOKEN` | New long shared secret; generate with `openssl rand -hex 32`. This replaces the Worker and backend tokens together after a successful deployment. |
-| `STREAMER_TUNNEL_TOKEN` | Token for a **remotely managed** Cloudflare Tunnel. In Cloudflare, open **Networking → Tunnels → your tunnel → Add a replica** and copy only the token from the install command. [Cloudflare's token instructions](https://developers.cloudflare.com/tunnel/reference/tunnel-tokens/). |
+| `STREAMER_TUNNEL_TOKEN` | Token for a **remotely managed** Cloudflare Tunnel. In Cloudflare, open **Networking → Tunnels → your tunnel → Add a replica** and copy only the token from the install command. Deployment uses its tunnel ID to fetch the current token from Cloudflare, so this value can remain after tunnel token rotation. [Cloudflare's token instructions](https://developers.cloudflare.com/tunnel/reference/tunnel-tokens/). |
 
 Add these repository **variables**:
 
@@ -38,6 +38,8 @@ Add these repository **variables**:
 | `STREAMER_BACKEND_ENABLED` | Set to `true` **after** all settings above are saved. Until then, backend deployment is skipped and Worker deployments continue. |
 
 Configure the tunnel's public hostname to forward to `http://localhost:3001` on the new VPS. You can reuse the existing hostname and tunnel if they are remotely managed, or create a new tunnel and set `STREAMER_BACKEND_URL` to its hostname. Keep `3001` closed to public traffic. The script stores tokens in restricted files on the VPS: `/etc/streamer-backend.env` and `/etc/streamer-tunnel.token`. Torrent data lives in `/var/lib/streamer/torrents`, with a two-session and 8 GB per torrent limit.
+
+The `CLOUDFLARE_API_TOKEN` secret needs Cloudflare Tunnel Write (or Cloudflare One Connector: cloudflared Write) permission to fetch the current tunnel token. When moving an in-memory torrent backend, disconnect the retired server's tunnel connector; multiple replicas would split torrent sessions between servers.
 
 After setting the variable, run **Actions → Deploy Cloudflare Worker → Run workflow**. The backend job builds and deploys to the new VPS, verifies its local HTTP response, and starts the tunnel. The Worker job remains independent so the site can still deploy if the VPS is unavailable. The `connect-backend` job waits for the public tunnel hostname and then updates `TORRENT_BACKEND_URL` and `TORRENT_BACKEND_TOKEN` on the Worker. The backend release symlink rolls back if its local health check fails.
 
