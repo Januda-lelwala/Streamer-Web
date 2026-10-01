@@ -19,6 +19,13 @@ export async function proxyTorrent(request: Request) {
       redirect: "manual",
     });
     if (upstream.status >= 300 && upstream.status < 400) throw new Error("Torrent backend redirected unexpectedly.");
+    if (!source.pathname.includes("/files/") && !upstream.headers.get("Content-Type")?.toLowerCase().includes("application/json")) {
+      const body = upstream.status === 530 ? await upstream.text() : "";
+      const error = body.includes("error code: 1033")
+        ? "Streaming server is offline: its Cloudflare Tunnel is disconnected (error 1033)."
+        : "Streaming server returned an unexpected response.";
+      return Response.json({ error }, { status: 502, headers: { "Cache-Control": "no-store" } });
+    }
     const responseHeaders = new Headers();
     for (const name of ["Content-Type", "Content-Length", "Content-Range", "Accept-Ranges", "X-Content-Type-Options"]) {
       const value = upstream.headers.get(name);

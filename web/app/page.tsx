@@ -17,6 +17,17 @@ function formatBytes(bytes: number) {
   return `${(bytes / 1024 ** unit).toFixed(unit ? 1 : 0)} ${["B", "KB", "MB", "GB", "TB"][unit]}`;
 }
 
+async function apiJson<T>(response: Response): Promise<T> {
+  let data: { error?: string };
+  try {
+    data = await response.json();
+  } catch {
+    throw new Error(`The server returned an invalid response (HTTP ${response.status}).`);
+  }
+  if (!response.ok) throw new Error(data.error || `The server returned HTTP ${response.status}.`);
+  return data as T;
+}
+
 function FileTree({ files, selected, onPlay }: { files: PlayableFile[]; selected: number | null; onPlay: (file: PlayableFile) => void }) {
   const root: Folder = { name: "", folders: new Map(), files: [] };
   for (const file of files) {
@@ -86,8 +97,7 @@ export default function Home() {
     setSearchError("");
     try {
       const response = await fetch(`/api/search?q=${encodeURIComponent(term)}&page=${page}`);
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Search failed");
+      const data = await apiJson<SearchResponse>(response);
       setSearch(data);
       setQuery(term);
     } catch (error) { setSearchError(error instanceof Error ? error.message : "Search failed"); }
@@ -132,8 +142,7 @@ export default function Home() {
     try {
       const response = await fetch("/api/torrents", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ infoHash: hash }) });
       if (requestRef.current !== request) return;
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Could not connect to torrent backend.");
+      const data = await apiJson<BackendSnapshot>(response);
       setStatus("fetching torrent metadata");
       let ready = false;
       const update = (snapshot: BackendSnapshot) => {
@@ -160,14 +169,13 @@ export default function Home() {
           setStatus("choose a video file");
         }
       };
-      update(data as BackendSnapshot);
-      if ((data as BackendSnapshot).status === "error") return;
+      update(data);
+      if (data.status === "error") return;
       intervalRef.current = setInterval(async () => {
         if (requestRef.current !== request) return;
         try {
           const statusResponse = await fetch(`/api/torrents/${hash}`);
-          const snapshot = await statusResponse.json();
-          if (!statusResponse.ok) throw new Error(snapshot.error || "Torrent backend lost the stream.");
+          const snapshot = await apiJson<BackendSnapshot>(statusResponse);
           update(snapshot);
         } catch (error) {
           if (requestRef.current !== request) return;
