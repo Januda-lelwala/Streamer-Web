@@ -66,6 +66,7 @@ export default function Home() {
   const [streamError, setStreamError] = useState("");
   const [files, setFiles] = useState<PlayableFile[]>([]);
   const [chosen, setChosen] = useState<PlayableFile | null>(null);
+  const [compatibleAudio, setCompatibleAudio] = useState(false);
   const [stats, setStats] = useState({ progress: 0, downloaded: 0, speed: 0, peers: 0 });
   const videoRef = useRef<HTMLVideoElement>(null);
   const playerRef = useRef<HTMLElement>(null);
@@ -80,6 +81,7 @@ export default function Home() {
     setActive(null);
     setFiles([]);
     setChosen(null);
+    setCompatibleAudio(false);
     setStats({ progress: 0, downloaded: 0, speed: 0, peers: 0 });
     setStatus("idle");
     setStreamError("");
@@ -108,6 +110,7 @@ export default function Home() {
 
   function playFile(file: PlayableFile) {
     setChosen(file);
+    setCompatibleAudio(false);
     setStatus("buffering");
     setStreamError("");
   }
@@ -116,13 +119,14 @@ export default function Home() {
     if (!chosen || !videoRef.current) return;
     playerRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     try {
-      videoRef.current.src = `/api/torrents/${chosen.hash}/files/${chosen.index}`;
+      videoRef.current.src = `/api/torrents/${chosen.hash}/files/${chosen.index}${compatibleAudio ? "/compatible" : ""}`;
+      if (compatibleAudio) { videoRef.current.muted = false; videoRef.current.volume = 1; }
       void videoRef.current.play().then(() => setStatus("playing")).catch(() => setStatus("ready — press play"));
     } catch (error) {
       setStreamError(error instanceof Error ? error.message : "This file cannot play in your browser.");
       setStatus("playback unavailable");
     }
-  }, [chosen]);
+  }, [chosen, compatibleAudio]);
 
   async function start(result: Result) {
     stop();
@@ -219,6 +223,8 @@ export default function Home() {
         {active && chosen && <section className="player-panel" aria-label="Now streaming" ref={playerRef}>
           <div className="section-heading"><div><p className="eyebrow">NOW STREAMING</p><h2>{active.name}</h2></div><button className="close-button" onClick={stop}>Stop stream ✕</button></div>
           <div className="video-wrap"><video ref={videoRef} controls playsInline onError={() => { setStreamError("This video format or codec is not supported by your browser."); setStatus("playback unavailable"); }} /><div className="video-status">{status}</div></div>
+          {!compatibleAudio && /\.(mkv|avi|mov|mp4|m4v)$/i.test(chosen.name) && <button type="button" className="secondary-button" onClick={() => { setCompatibleAudio(true); setStatus("converting audio"); setStreamError(""); }}>Picture plays but no sound? Play with AAC audio</button>}
+          {compatibleAudio && <p className="note">Audio is converted to stereo AAC while you watch. Seeking is unavailable in this mode.</p>}
           {streamError && <p className="error" role="alert">{streamError}</p>}
           <div className="stream-meta"><span><b>{Math.round(stats.progress)}%</b> downloaded</span><span><b>{formatBytes(stats.downloaded)}</b> received</span><span><b>{formatBytes(stats.speed)}/s</b> speed</span><span><b>{stats.peers}</b> peers</span></div>
           <div className="progress-track"><div style={{ width: `${Math.max(0, Math.min(stats.progress, 100))}%` }} /></div>

@@ -13,7 +13,7 @@ for file in backend.tar.gz backend.env tunnel.token; do
 done
 
 sudo apt-get update -qq
-sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ca-certificates curl xz-utils
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ca-certificates curl ffmpeg xz-utils
 
 node_version=v22.23.3
 node_home="/opt/node-$node_version"
