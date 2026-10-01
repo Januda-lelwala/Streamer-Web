@@ -2,6 +2,11 @@ name: Inspect streamer tunnel
 
 on:
   workflow_dispatch:
+    inputs:
+      remove_old_connector:
+        description: Remove only the connector from 140.245.195.5
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -27,3 +32,11 @@ jobs:
             -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
             "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/cfd_tunnel/$tunnel_id/connections")
           jq -r 'if .success then .result[] | [.id, ([.conns[].origin_ip] | unique | join(",")), .run_at] | @tsv else .errors[] | [.code, .message] | @tsv end' <<<"$response"
+          if [[ '${{ inputs.remove_old_connector }}' == 'true' ]]; then
+            old_id=$(jq -r '[.result[] | select(([.conns[].origin_ip] | unique) == ["140.245.195.5"]) | .id] | if length == 1 then .[0] else error("Expected exactly one old connector") end' <<<"$response")
+            jq -e '[.result[] | select(([.conns[].origin_ip] | index("3.239.72.208")) != null)] | length >= 1' <<<"$response" >/dev/null
+            curl --silent --show-error --fail-with-body -X DELETE \
+              -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+              "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/cfd_tunnel/$tunnel_id/connections?client_id=$old_id" \
+              | jq -e '.success'
+          fi
