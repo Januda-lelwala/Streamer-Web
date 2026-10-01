@@ -55,15 +55,27 @@ jobs:
           DEPLOY_USER: ${{ secrets.STREAMER_VPS_USER }}
           BACKEND_TOKEN: ${{ secrets.STREAMER_BACKEND_TOKEN }}
           TUNNEL_TOKEN: ${{ secrets.STREAMER_TUNNEL_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           test -n "$BACKEND_TOKEN" && test -n "$TUNNEL_TOKEN"
           [[ "$BACKEND_TOKEN" =~ ^[a-zA-Z0-9_-]{32,}$ ]]
-          [[ "$TUNNEL_TOKEN" != *$'\n'* ]]
+          tunnel_id=$(python3 - <<'PY'
+          import base64, json, os
+          token = os.environ['TUNNEL_TOKEN']
+          print(json.loads(base64.b64decode(token + '=' * (-len(token) % 4)))['t'])
+          PY
+          )
+          current_token=$(curl --fail --silent --show-error \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/cfd_tunnel/$tunnel_id/token" \
+            | jq -er '.result')
+          [[ "$current_token" != *$'\n'* ]]
           stage="$RUNNER_TEMP/streamer-deploy"
           mkdir -m 700 "$stage"
           trap 'rm -rf "$stage"' EXIT
           printf 'STREAM_BACKEND_TOKEN=%s\nMAX_ACTIVE_TORRENTS=2\nMAX_TORRENT_BYTES=8589934592\n' "$BACKEND_TOKEN" > "$stage/backend.env"
-          printf '%s\n' "$TUNNEL_TOKEN" > "$stage/tunnel.token"
+          printf '%s\n' "$current_token" > "$stage/tunnel.token"
           chmod 600 "$stage/backend.env" "$stage/tunnel.token"
           target="$DEPLOY_USER@$DEPLOY_HOST"
           remote_stage="/tmp/streamer-deploy-$GITHUB_SHA"
