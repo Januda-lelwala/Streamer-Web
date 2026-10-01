@@ -14,6 +14,7 @@ concurrency:
 
 jobs:
   build-backend:
+    if: ${{ vars.STREAMER_BACKEND_ENABLED == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
@@ -35,36 +36,40 @@ jobs:
           tar -czf "$RUNNER_TEMP/backend.tar.gz" -C .next/standalone .
       - name: Configure SSH
         env:
+          DEPLOY_HOST: ${{ secrets.STREAMER_VPS_HOST }}
+          DEPLOY_USER: ${{ secrets.STREAMER_VPS_USER }}
           DEPLOY_KEY: ${{ secrets.STREAMER_VPS_DEPLOY_KEY }}
+          HOST_FINGERPRINT: ${{ secrets.STREAMER_VPS_HOST_FINGERPRINT }}
         run: |
-          test -n "$DEPLOY_KEY"
+          test -n "$DEPLOY_HOST" && test -n "$DEPLOY_USER" && test -n "$DEPLOY_KEY" && test -n "$HOST_FINGERPRINT"
+          [[ "$DEPLOY_HOST" =~ ^[a-zA-Z0-9.-]+$ ]]
+          [[ "$DEPLOY_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
           install -m 700 -d "$HOME/.ssh"
           printf '%s\n' "$DEPLOY_KEY" > "$HOME/.ssh/streamer_deploy"
           chmod 600 "$HOME/.ssh/streamer_deploy"
-          ssh-keyscan -T 15 -t ed25519 140.245.195.5 > "$HOME/.ssh/known_hosts"
-          test "$(ssh-keygen -lf "$HOME/.ssh/known_hosts" | awk '{print $2}')" = 'SHA256:2bmFX4IfXe6kwDd7Zjvqi7y4H3rq/6wF/To68iO3+dc'
+          ssh-keyscan -T 15 -t ed25519 "$DEPLOY_HOST" > "$HOME/.ssh/known_hosts"
+          test "$(ssh-keygen -lf "$HOME/.ssh/known_hosts" | awk '{print $2}')" = "$HOST_FINGERPRINT"
       - name: Deploy backend to VPS
+        env:
+          DEPLOY_HOST: ${{ secrets.STREAMER_VPS_HOST }}
+          DEPLOY_USER: ${{ secrets.STREAMER_VPS_USER }}
+          BACKEND_TOKEN: ${{ secrets.STREAMER_BACKEND_TOKEN }}
+          TUNNEL_TOKEN: ${{ secrets.STREAMER_TUNNEL_TOKEN }}
         run: |
-          scp -i "$HOME/.ssh/streamer_deploy" "$RUNNER_TEMP/backend.tar.gz" opc@140.245.195.5:/tmp/streamer-backend-${GITHUB_SHA}.tar.gz
-          ssh -i "$HOME/.ssh/streamer_deploy" opc@140.245.195.5 "bash -s -- '$GITHUB_SHA'" <<'SCRIPT'
-          set -euo pipefail
-          revision="$1"
-          release="/opt/streamer-backend/releases/$revision"
-          previous="$(readlink -f /opt/streamer-backend/current)"
-          sudo sed -i 's/^MAX_ACTIVE_TORRENTS=.*/MAX_ACTIVE_TORRENTS=2/' /etc/streamer-backend.env
-          sudo install -d -m 755 "$release"
-          sudo tar -xzf "/tmp/streamer-backend-$revision.tar.gz" -C "$release"
-          sudo ln -sfn "$release" /opt/streamer-backend/current.next
-          sudo mv -Tf /opt/streamer-backend/current.next /opt/streamer-backend/current
-          sudo systemctl restart streamer-backend
-          if ! curl --fail --silent --show-error --retry 12 --retry-delay 2 --retry-connrefused http://127.0.0.1:3001/ -o /dev/null; then
-            sudo ln -sfn "$previous" /opt/streamer-backend/current.next
-            sudo mv -Tf /opt/streamer-backend/current.next /opt/streamer-backend/current
-            sudo systemctl restart streamer-backend
-            exit 1
-          fi
-          rm -f "/tmp/streamer-backend-$revision.tar.gz"
-          SCRIPT
+          test -n "$BACKEND_TOKEN" && test -n "$TUNNEL_TOKEN"
+          [[ "$BACKEND_TOKEN" =~ ^[a-zA-Z0-9_-]{32,}$ ]]
+          [[ "$TUNNEL_TOKEN" != *$'\n'* ]]
+          stage="$RUNNER_TEMP/streamer-deploy"
+          mkdir -m 700 "$stage"
+          trap 'rm -rf "$stage"' EXIT
+          printf 'STREAM_BACKEND_TOKEN=%s\nMAX_ACTIVE_TORRENTS=2\nMAX_TORRENT_BYTES=8589934592\n' "$BACKEND_TOKEN" > "$stage/backend.env"
+          printf '%s\n' "$TUNNEL_TOKEN" > "$stage/tunnel.token"
+          chmod 600 "$stage/backend.env" "$stage/tunnel.token"
+          target="$DEPLOY_USER@$DEPLOY_HOST"
+          remote_stage="/tmp/streamer-deploy-$GITHUB_SHA"
+          ssh -i "$HOME/.ssh/streamer_deploy" -o BatchMode=yes "$target" "mkdir -p -m 700 '$remote_stage' && chmod 700 '$remote_stage'"
+          scp -i "$HOME/.ssh/streamer_deploy" -o BatchMode=yes "$RUNNER_TEMP/backend.tar.gz" "$stage/backend.env" "$stage/tunnel.token" deploy-vps.sh "$target:$remote_stage/"
+          ssh -i "$HOME/.ssh/streamer_deploy" -o BatchMode=yes "$target" "bash '$remote_stage/deploy-vps.sh' '$GITHUB_SHA'"
 
   deploy:
     runs-on: ubuntu-latest
@@ -84,3 +89,32 @@ jobs:
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+  connect-backend:
+    if: ${{ vars.STREAMER_BACKEND_ENABLED == 'true' }}
+    needs: [build-backend, deploy]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - name: Verify tunnel and update Worker secrets
+        env:
+          BACKEND_URL: ${{ vars.STREAMER_BACKEND_URL }}
+          BACKEND_TOKEN: ${{ secrets.STREAMER_BACKEND_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          test -n "$BACKEND_URL" && test -n "$BACKEND_TOKEN"
+          [[ "$BACKEND_URL" =~ ^https://[a-zA-Z0-9.-]+/?$ ]]
+          curl --fail --silent --show-error --retry 12 --retry-delay 5 --retry-all-errors "${BACKEND_URL%/}/" -o /dev/null
+          printf '%s' "$BACKEND_TOKEN" | npx wrangler secret put TORRENT_BACKEND_TOKEN --name web
+          printf '%s' "${BACKEND_URL%/}" | npx wrangler secret put TORRENT_BACKEND_URL --name web

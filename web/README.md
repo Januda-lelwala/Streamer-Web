@@ -28,7 +28,7 @@ npm run deploy
 
 The Worker name is set in `wrangler.jsonc`. Change it before deployment if needed. For a Cloudflare Git deployment, set the root directory to `web` and use `npm run deploy` as the deploy command.
 
-The GitHub Actions workflow at `../.github/workflows/deploy-worker.yml` deploys every push to `main`. It requires the repository secrets `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`. The token needs permission to deploy the Worker.
+The GitHub Actions workflow at `../.github/workflows/deploy-worker.yml` deploys every push to `main`. It requires the repository secrets `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`. The token needs permission to deploy the Worker and update its secrets. Backend deployment is enabled separately with the settings in the [backend migration guide](../backend/README.md#move-production-to-an-ubuntudebian-x86-64-vps).
 
 ## How it works
 
