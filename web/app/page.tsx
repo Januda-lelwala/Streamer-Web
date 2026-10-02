@@ -173,10 +173,12 @@ export default function Home() {
     setScrubTime(null);
     setPlayhead(target);
     const video = videoRef.current;
-    if (compatibleAudio || /\.(mkv|avi|mov)$/i.test(chosen.name) || !video?.seekable.length) {
-      video?.pause();
-      video?.removeAttribute("src");
-      video?.load();
+    if (!video) return;
+    const canConvert = /\.(mkv|avi|mov|mp4|m4v)$/i.test(chosen.name);
+    if (compatibleAudio || (canConvert && (/\.(mkv|avi|mov)$/i.test(chosen.name) || !video.seekable.length))) {
+      video.pause();
+      video.removeAttribute("src");
+      video.load();
       setSourceStart(target);
       setCompatibleAudio(true);
       setStatus("buffering at selected time");
