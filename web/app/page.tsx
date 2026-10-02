@@ -4,8 +4,8 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 
 type Result = { name: string; size: string; seeds: number; peers: number; files: number; magnet: string };
 type SearchResponse = { results: Result[]; page: number; totalPages: number; totalResults: number; query: string };
-type PlayableFile = { name: string; path?: string; length: number; hash: string; index: number };
-type BackendSnapshot = { infoHash: string; status: "loading" | "ready" | "error"; error: string | null; files: { index: number; name: string; path?: string; length: number }[]; progress: number; downloaded: number; speed: number; peers: number };
+type PlayableFile = { name: string; path?: string; length: number; downloaded: number; hash: string; index: number };
+type BackendSnapshot = { infoHash: string; status: "loading" | "ready" | "error"; error: string | null; files: { index: number; name: string; path?: string; length: number; downloaded: number }[]; progress: number; downloaded: number; speed: number; peers: number };
 type Folder = { name: string; folders: Map<string, Folder>; files: PlayableFile[] };
 
 const DEMO_MAGNET = "magnet:?xt=urn:btih:08ada5a7a6183aae1e09d831df6748d566095a10&dn=Sintel&tr=wss%3A%2F%2Ftracker.btorrent.xyz&tr=wss%3A%2F%2Ftracker.openwebtorrent.com&ws=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2F&xs=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2Fsintel.torrent";
@@ -83,12 +83,14 @@ export default function Home() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const [volume, setVolume] = useState(1);
+  const [bufferedAhead, setBufferedAhead] = useState(0);
   const [stats, setStats] = useState({ progress: 0, downloaded: 0, speed: 0, peers: 0 });
   const videoRef = useRef<HTMLVideoElement>(null);
   const surfaceRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<HTMLElement>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const requestRef = useRef(0);
+  const selectedRef = useRef<PlayableFile | null>(null);
 
   function stop() {
     requestRef.current++;
@@ -98,12 +100,14 @@ export default function Home() {
     setActive(null);
     setFiles([]);
     setChosen(null);
+    selectedRef.current = null;
     setCompatibleAudio(false);
     setDuration(null);
     setPlayhead(0);
     setScrubTime(null);
     setSourceStart(0);
     setIsPlaying(false);
+    setBufferedAhead(0);
     setStats({ progress: 0, downloaded: 0, speed: 0, peers: 0 });
     setStatus("idle");
     setStreamError("");
@@ -132,6 +136,7 @@ export default function Home() {
 
   function playFile(file: PlayableFile) {
     if (videoRef.current) { videoRef.current.pause(); videoRef.current.removeAttribute("src"); videoRef.current.load(); }
+    selectedRef.current = file;
     setChosen({ ...file });
     setCompatibleAudio(false);
     setDuration(null);
@@ -139,6 +144,7 @@ export default function Home() {
     setScrubTime(null);
     setSourceStart(0);
     setIsPlaying(false);
+    setBufferedAhead(0);
     setStatus("buffering");
     setStreamError("");
   }
@@ -188,6 +194,17 @@ export default function Home() {
     }
   }
 
+  function updatePlaybackBuffer(video: HTMLVideoElement) {
+    let ahead = 0;
+    for (let index = 0; index < video.buffered.length; index++) {
+      if (video.buffered.start(index) <= video.currentTime && video.currentTime <= video.buffered.end(index)) {
+        ahead = video.buffered.end(index) - video.currentTime;
+        break;
+      }
+    }
+    setBufferedAhead(Number.isFinite(ahead) ? Math.max(0, ahead) : 0);
+  }
+
   async function start(result: Result) {
     stop();
     const request = requestRef.current;
@@ -218,7 +235,13 @@ export default function Home() {
           setStatus("connection failed");
           return;
         }
-        setStats({ progress: snapshot.progress * 100, downloaded: snapshot.downloaded, speed: snapshot.speed, peers: snapshot.peers });
+        const selectedFile = snapshot.files.find((file) => file.index === selectedRef.current?.index);
+        setStats({
+          progress: selectedFile ? (selectedFile.length ? selectedFile.downloaded / selectedFile.length * 100 : 100) : snapshot.progress * 100,
+          downloaded: selectedFile?.downloaded ?? snapshot.downloaded,
+          speed: snapshot.speed,
+          peers: snapshot.peers,
+        });
         if (snapshot.status !== "ready" || ready) return;
         ready = true;
         const videos: PlayableFile[] = snapshot.files
@@ -285,7 +308,8 @@ export default function Home() {
           <div className="player-surface" ref={surfaceRef}>
             <div className="video-wrap"><video ref={videoRef} playsInline
               onLoadedMetadata={(event) => { if (!duration && Number.isFinite(event.currentTarget.duration)) setDuration(event.currentTarget.duration); }}
-              onTimeUpdate={(event) => setPlayhead((compatibleAudio ? sourceStart : 0) + event.currentTarget.currentTime)}
+              onTimeUpdate={(event) => { setPlayhead((compatibleAudio ? sourceStart : 0) + event.currentTarget.currentTime); updatePlaybackBuffer(event.currentTarget); }}
+              onProgress={(event) => updatePlaybackBuffer(event.currentTarget)}
               onPlay={() => { setIsPlaying(true); setStatus("playing"); }}
               onPause={() => setIsPlaying(false)}
               onEnded={() => { setIsPlaying(false); setStatus("finished"); }}
@@ -309,7 +333,7 @@ export default function Home() {
           {!compatibleAudio && /\.(mkv|avi|mov|mp4|m4v)$/i.test(chosen.name) && <button type="button" className="secondary-button" onClick={() => { const now = videoRef.current?.currentTime || 0; setSourceStart(now); setPlayhead(now); setCompatibleAudio(true); setStatus("converting audio"); setStreamError(""); }}>Picture plays but no sound? Play with AAC audio</button>}
           {compatibleAudio && <p className="note">Audio is converted to stereo AAC while you watch. Use the timeline to seek to another point.</p>}
           {streamError && <p className="error" role="alert">{streamError}</p>}
-          <div className="stream-meta"><span><b>{Math.round(stats.progress)}%</b> downloaded</span><span><b>{formatBytes(stats.downloaded)}</b> received</span><span><b>{formatBytes(stats.speed)}/s</b> speed</span><span><b>{stats.peers}</b> peers</span></div>
+          <div className="stream-meta"><span><b>{Math.round(stats.progress)}%</b> of this file cached</span><span><b>{formatBytes(stats.downloaded)}</b> of {formatBytes(chosen.length)} on server</span>{stats.downloaded >= chosen.length ? <span>File cached on server</span> : <span><b>{formatBytes(stats.speed)}/s</b> torrent download</span>}<span><b>{Math.round(bufferedAhead)}s</b> buffered for playback</span><span><b>{stats.peers}</b> peers</span></div>
           <a className="magnet-link" href={active.magnet}>Open magnet in desktop client ↗</a>
         </section>}
 
