@@ -52,5 +52,7 @@ The Worker sends only a 40-character info hash to the backend. The backend uses 
 - `POST /api/torrents` with JSON `{ "infoHash": "..." }` starts or reuses a session.
 - `GET /api/torrents/:hash` reports metadata, files, and transfer progress.
 - `GET /api/torrents/:hash/files/:index` streams a file; `Range` requests return `206` with `Content-Range`.
+- `GET /api/torrents/:hash/files/:index/metadata` probes the full duration and codecs, caching the result for the torrent session.
+- `GET /api/torrents/:hash/files/:index/compatible?start=<seconds>` starts a fragmented MP4 stream at the requested time, copying video and converting audio to stereo AAC. It does not support HTTP byte-range seeking; clients seek by requesting a new start time.
 
 All endpoints require `Authorization: Bearer <STREAM_BACKEND_TOKEN>`.

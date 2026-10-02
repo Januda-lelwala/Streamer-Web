@@ -131,12 +131,14 @@ export default function Home() {
   function submitSearch(event: FormEvent) { event.preventDefault(); void doSearch(); }
 
   function playFile(file: PlayableFile) {
-    setChosen(file);
+    if (videoRef.current) { videoRef.current.pause(); videoRef.current.removeAttribute("src"); videoRef.current.load(); }
+    setChosen({ ...file });
     setCompatibleAudio(false);
     setDuration(null);
     setPlayhead(0);
     setScrubTime(null);
     setSourceStart(0);
+    setIsPlaying(false);
     setStatus("buffering");
     setStreamError("");
   }
