@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { authorized, unauthorized } from "../../../../../../../lib/auth.js";
 import { mediaInput } from "../../../../../../../lib/media-input.js";
-import { beginStream, getTorrent } from "../../../../../../../lib/torrents.js";
+import { beginStream, getTorrent, selectPlaybackFile } from "../../../../../../../lib/torrents.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -54,6 +54,7 @@ export async function GET(request, { params }) {
   if (!entry.torrent.files[Number(index)]) {
     return Response.json({ error: "File not found." }, { status: 404 });
   }
+  selectPlaybackFile(entry, Number(index));
   const cache = entry.mediaMetadata ??= new Map();
   if (!cache.has(index)) cache.set(index, probe(entry, hash, index));
   try {

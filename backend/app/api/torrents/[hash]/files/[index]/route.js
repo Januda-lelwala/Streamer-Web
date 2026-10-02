@@ -1,5 +1,5 @@
 import { authorized, unauthorized } from "../../../../../../lib/auth.js";
-import { beginStream, getTorrent } from "../../../../../../lib/torrents.js";
+import { beginStream, getTorrent, selectPlaybackFile } from "../../../../../../lib/torrents.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -33,6 +33,7 @@ export async function GET(request, { params }) {
   if (!file) return Response.json({ error: "File not found." }, { status: 404 });
   const range = byteRange(request.headers.get("range"), file.length);
   if (!range) return new Response(null, { status: 416, headers: { "Content-Range": `bytes */${file.length}` } });
+  selectPlaybackFile(entry, Number(index));
   const finish = beginStream(entry);
   const reader = file.stream({ start: range.start, end: range.end }).getReader();
   const stream = new ReadableStream({

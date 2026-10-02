@@ -59,7 +59,7 @@ export function addTorrent(hash) {
     }
     removeTorrent(state, replaceable.hash);
   }
-  const entry = { hash, status: "loading", error: null, torrent: null, activeStreams: 0, lastAccess: Date.now(), timeout: null };
+  const entry = { hash, status: "loading", error: null, torrent: null, activeStreams: 0, lastAccess: Date.now(), timeout: null, selectedFiles: new Set() };
   state.entries.set(hash, entry);
   try {
     const torrent = state.client.add(hash, {
@@ -138,4 +138,14 @@ export function beginStream(entry) {
     entry.activeStreams--;
     entry.lastAccess = Date.now();
   };
+}
+
+export function selectPlaybackFile(entry, index) {
+  const file = entry.torrent?.files[index];
+  if (!file) return;
+  if (entry.selectedFiles.has(index)) return;
+  // A browser or ffmpeg may request just a small range. Keep fetching the
+  // chosen video after that range completes so playback has data ahead.
+  file.select(0);
+  entry.selectedFiles.add(index);
 }

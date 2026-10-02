@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { Readable } from "node:stream";
 import { authorized, unauthorized } from "../../../../../../../lib/auth.js";
 import { mediaInput } from "../../../../../../../lib/media-input.js";
-import { beginStream, getTorrent } from "../../../../../../../lib/torrents.js";
+import { beginStream, getTorrent, selectPlaybackFile } from "../../../../../../../lib/torrents.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -28,6 +28,7 @@ export async function GET(request, { params }) {
   if ((globalThis.__streamerAudioTranscodes || 0) >= 2) {
     return Response.json({ error: "Compatible audio is busy. Try again shortly." }, { status: 503 });
   }
+  selectPlaybackFile(entry, Number(index));
   globalThis.__streamerAudioTranscodes = (globalThis.__streamerAudioTranscodes || 0) + 1;
   const finish = beginStream(entry);
   const source = mediaInput(hash, index);
