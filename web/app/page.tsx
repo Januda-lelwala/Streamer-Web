@@ -17,6 +17,15 @@ function formatBytes(bytes: number) {
   return `${(bytes / 1024 ** unit).toFixed(unit ? 1 : 0)} ${["B", "KB", "MB", "GB", "TB"][unit]}`;
 }
 
+function formatTime(seconds: number) {
+  if (!Number.isFinite(seconds) || seconds < 0) return "--:--";
+  const total = Math.floor(seconds);
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const rest = String(total % 60).padStart(2, "0");
+  return hours ? `${hours}:${String(minutes).padStart(2, "0")}:${rest}` : `${minutes}:${rest}`;
+}
+
 async function apiJson<T>(response: Response): Promise<T> {
   let data: { error?: string };
   try {
@@ -67,8 +76,16 @@ export default function Home() {
   const [files, setFiles] = useState<PlayableFile[]>([]);
   const [chosen, setChosen] = useState<PlayableFile | null>(null);
   const [compatibleAudio, setCompatibleAudio] = useState(false);
+  const [duration, setDuration] = useState<number | null>(null);
+  const [playhead, setPlayhead] = useState(0);
+  const [scrubTime, setScrubTime] = useState<number | null>(null);
+  const [sourceStart, setSourceStart] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [isMuted, setIsMuted] = useState(false);
+  const [volume, setVolume] = useState(1);
   const [stats, setStats] = useState({ progress: 0, downloaded: 0, speed: 0, peers: 0 });
   const videoRef = useRef<HTMLVideoElement>(null);
+  const surfaceRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<HTMLElement>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const requestRef = useRef(0);
@@ -82,6 +99,11 @@ export default function Home() {
     setFiles([]);
     setChosen(null);
     setCompatibleAudio(false);
+    setDuration(null);
+    setPlayhead(0);
+    setScrubTime(null);
+    setSourceStart(0);
+    setIsPlaying(false);
     setStats({ progress: 0, downloaded: 0, speed: 0, peers: 0 });
     setStatus("idle");
     setStreamError("");
@@ -111,22 +133,56 @@ export default function Home() {
   function playFile(file: PlayableFile) {
     setChosen(file);
     setCompatibleAudio(false);
+    setDuration(null);
+    setPlayhead(0);
+    setScrubTime(null);
+    setSourceStart(0);
     setStatus("buffering");
     setStreamError("");
   }
 
   useEffect(() => {
-    if (!chosen || !videoRef.current) return;
+    if (!chosen) return;
+    let cancelled = false;
+    void fetch(`/api/torrents/${chosen.hash}/files/${chosen.index}/metadata`)
+      .then((response) => apiJson<{ duration: number | null }>(response))
+      .then((details) => { if (!cancelled) setDuration(details.duration || 0); })
+      .catch(() => { if (!cancelled) setDuration(0); });
+    return () => { cancelled = true; };
+  }, [chosen]);
+
+  useEffect(() => {
+    if (!chosen || duration === null || !videoRef.current) return;
     playerRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     try {
-      videoRef.current.src = `/api/torrents/${chosen.hash}/files/${chosen.index}${compatibleAudio ? "/compatible" : ""}`;
-      if (compatibleAudio) { videoRef.current.muted = false; videoRef.current.volume = 1; }
+      videoRef.current.src = `/api/torrents/${chosen.hash}/files/${chosen.index}${compatibleAudio ? `/compatible?start=${sourceStart.toFixed(3)}` : ""}`;
+      videoRef.current.muted = isMuted;
+      videoRef.current.volume = volume;
       void videoRef.current.play().then(() => setStatus("playing")).catch(() => setStatus("ready — press play"));
     } catch (error) {
       setStreamError(error instanceof Error ? error.message : "This file cannot play in your browser.");
       setStatus("playback unavailable");
     }
-  }, [chosen, compatibleAudio]);
+  }, [chosen, compatibleAudio, sourceStart, duration]);
+
+  function seekTo(seconds: number) {
+    if (!chosen || !duration || !Number.isFinite(seconds)) return;
+    const target = Math.max(0, Math.min(seconds, duration - 0.1));
+    setScrubTime(null);
+    setPlayhead(target);
+    const video = videoRef.current;
+    if (compatibleAudio || /\.(mkv|avi|mov)$/i.test(chosen.name) || !video?.seekable.length) {
+      video?.pause();
+      video?.removeAttribute("src");
+      video?.load();
+      setSourceStart(target);
+      setCompatibleAudio(true);
+      setStatus("buffering at selected time");
+    } else {
+      video.currentTime = target;
+      setStatus("buffering at selected time");
+    }
+  }
 
   async function start(result: Result) {
     stop();
@@ -222,12 +278,34 @@ export default function Home() {
 
         {active && chosen && <section className="player-panel" aria-label="Now streaming" ref={playerRef}>
           <div className="section-heading"><div><p className="eyebrow">NOW STREAMING</p><h2>{active.name}</h2></div><button className="close-button" onClick={stop}>Stop stream ✕</button></div>
-          <div className="video-wrap"><video ref={videoRef} controls playsInline onError={() => { setStreamError("This video format or codec is not supported by your browser."); setStatus("playback unavailable"); }} /><div className="video-status">{status}</div></div>
-          {!compatibleAudio && /\.(mkv|avi|mov|mp4|m4v)$/i.test(chosen.name) && <button type="button" className="secondary-button" onClick={() => { setCompatibleAudio(true); setStatus("converting audio"); setStreamError(""); }}>Picture plays but no sound? Play with AAC audio</button>}
-          {compatibleAudio && <p className="note">Audio is converted to stereo AAC while you watch. Seeking is unavailable in this mode.</p>}
+          <div className="player-surface" ref={surfaceRef}>
+            <div className="video-wrap"><video ref={videoRef} playsInline
+              onLoadedMetadata={(event) => { if (!duration && Number.isFinite(event.currentTarget.duration)) setDuration(event.currentTarget.duration); }}
+              onTimeUpdate={(event) => setPlayhead((compatibleAudio ? sourceStart : 0) + event.currentTarget.currentTime)}
+              onPlay={() => { setIsPlaying(true); setStatus("playing"); }}
+              onPause={() => setIsPlaying(false)}
+              onEnded={() => { setIsPlaying(false); setStatus("finished"); }}
+              onError={() => { setStreamError("This video format or codec is not supported by your browser."); setStatus("playback unavailable"); }}
+            /><div className="video-status">{status}</div></div>
+            <div className="player-controls">
+              <button type="button" aria-label={isPlaying ? "Pause video" : "Play video"} onClick={() => { const video = videoRef.current; if (!video) return; if (video.paused) void video.play(); else video.pause(); }}>{isPlaying ? "Ⅱ" : "▶"}</button>
+              <span className="player-time">{formatTime(scrubTime ?? playhead)}</span>
+              <input className="player-seek" type="range" aria-label="Seek video" min={0} max={duration && duration > 0 ? duration : 0} step={0.1} value={Math.min(scrubTime ?? playhead, duration || 0)} disabled={!duration}
+                onChange={(event) => setScrubTime(Number(event.currentTarget.value))}
+                onPointerUp={(event) => seekTo(Number(event.currentTarget.value))}
+                onKeyUp={(event) => { if (["ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"].includes(event.key)) seekTo(Number(event.currentTarget.value)); }}
+              />
+              <span className="player-time">{duration === null ? "Loading…" : formatTime(duration)}</span>
+              <button type="button" aria-label={isMuted ? "Unmute" : "Mute"} onClick={() => { const next = !isMuted; setIsMuted(next); if (videoRef.current) videoRef.current.muted = next; }}>{isMuted ? "🔇" : "🔊"}</button>
+              <input className="player-volume" type="range" aria-label="Volume" min={0} max={1} step={0.05} value={volume} onChange={(event) => { const next = Number(event.currentTarget.value); setVolume(next); setIsMuted(next === 0); if (videoRef.current) { videoRef.current.volume = next; videoRef.current.muted = next === 0; } }} />
+              <select aria-label="Playback speed" defaultValue="1" onChange={(event) => { if (videoRef.current) videoRef.current.playbackRate = Number(event.currentTarget.value); }}><option value="0.75">0.75×</option><option value="1">1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option></select>
+              <button type="button" aria-label="Fullscreen" onClick={() => void surfaceRef.current?.requestFullscreen()}>⛶</button>
+            </div>
+          </div>
+          {!compatibleAudio && /\.(mkv|avi|mov|mp4|m4v)$/i.test(chosen.name) && <button type="button" className="secondary-button" onClick={() => { const now = videoRef.current?.currentTime || 0; setSourceStart(now); setPlayhead(now); setCompatibleAudio(true); setStatus("converting audio"); setStreamError(""); }}>Picture plays but no sound? Play with AAC audio</button>}
+          {compatibleAudio && <p className="note">Audio is converted to stereo AAC while you watch. Use the timeline to seek to another point.</p>}
           {streamError && <p className="error" role="alert">{streamError}</p>}
           <div className="stream-meta"><span><b>{Math.round(stats.progress)}%</b> downloaded</span><span><b>{formatBytes(stats.downloaded)}</b> received</span><span><b>{formatBytes(stats.speed)}/s</b> speed</span><span><b>{stats.peers}</b> peers</span></div>
-          <div className="progress-track"><div style={{ width: `${Math.max(0, Math.min(stats.progress, 100))}%` }} /></div>
           <a className="magnet-link" href={active.magnet}>Open magnet in desktop client ↗</a>
         </section>}
 

@@ -7,6 +7,7 @@ export async function proxyTorrent(request: Request) {
   try {
     const source = new URL(request.url);
     const destination = new URL(source.pathname, backend);
+    destination.search = source.search;
     const headers = new Headers({ Authorization: `Bearer ${token}` });
     const range = request.headers.get("range");
     if (range) headers.set("Range", range);
