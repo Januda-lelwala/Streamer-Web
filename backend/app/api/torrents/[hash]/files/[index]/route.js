@@ -36,13 +36,24 @@ export async function GET(request, { params }) {
   selectPlaybackFile(entry, Number(index));
   const finish = beginStream(entry);
   const reader = file.stream({ start: range.start, end: range.end }).getReader();
+  const expectedBytes = range.end - range.start + 1;
+  let sentBytes = 0;
   const stream = new ReadableStream({
     async pull(controller) {
       try {
         const { done, value } = await reader.read();
-        if (done) { finish(); controller.close(); }
-        else controller.enqueue(value);
-      } catch (error) { finish(); controller.error(error); }
+        if (done) {
+          finish();
+          if (sentBytes !== expectedBytes) {
+            const error = new Error(`Video stream ended after ${sentBytes} of ${expectedBytes} bytes.`);
+            console.error(error);
+            controller.error(error);
+          } else controller.close();
+        } else {
+          sentBytes += value.byteLength;
+          controller.enqueue(value);
+        }
+      } catch (error) { finish(); console.error("Video stream failed:", error); controller.error(error); }
     },
     async cancel(reason) { finish(); await reader.cancel(reason); },
   });
@@ -51,7 +62,7 @@ export async function GET(request, { params }) {
     headers: {
       "Accept-Ranges": "bytes",
       "Content-Type": file.type || "application/octet-stream",
-      "Content-Length": String(range.end - range.start + 1),
+      "Content-Length": String(expectedBytes),
       ...(range.partial ? { "Content-Range": `bytes ${range.start}-${range.end}/${file.length}` } : {}),
       "Cache-Control": "no-store",
       "X-Content-Type-Options": "nosniff",

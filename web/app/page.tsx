@@ -80,6 +80,7 @@ export default function Home() {
   const [playhead, setPlayhead] = useState(0);
   const [scrubTime, setScrubTime] = useState<number | null>(null);
   const [sourceStart, setSourceStart] = useState(0);
+  const [compatibleRetry, setCompatibleRetry] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const [volume, setVolume] = useState(1);
@@ -91,21 +92,31 @@ export default function Home() {
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const requestRef = useRef(0);
   const selectedRef = useRef<PlayableFile | null>(null);
+  const playbackRetryRef = useRef({ attempts: 0, position: 0 });
+  const resumeListenerRef = useRef<(() => void) | null>(null);
+
+  function clearResumeListener(video: HTMLVideoElement | null) {
+    if (video && resumeListenerRef.current) video.removeEventListener("loadedmetadata", resumeListenerRef.current);
+    resumeListenerRef.current = null;
+  }
 
   function stop() {
     requestRef.current++;
     if (intervalRef.current) clearInterval(intervalRef.current);
     intervalRef.current = null;
+    clearResumeListener(videoRef.current);
     if (videoRef.current) { videoRef.current.pause(); videoRef.current.removeAttribute("src"); videoRef.current.load(); }
     setActive(null);
     setFiles([]);
     setChosen(null);
     selectedRef.current = null;
+    playbackRetryRef.current = { attempts: 0, position: 0 };
     setCompatibleAudio(false);
     setDuration(null);
     setPlayhead(0);
     setScrubTime(null);
     setSourceStart(0);
+    setCompatibleRetry(0);
     setIsPlaying(false);
     setBufferedAhead(0);
     setStats({ progress: 0, downloaded: 0, speed: 0, peers: 0 });
@@ -135,14 +146,17 @@ export default function Home() {
   function submitSearch(event: FormEvent) { event.preventDefault(); void doSearch(); }
 
   function playFile(file: PlayableFile) {
+    clearResumeListener(videoRef.current);
     if (videoRef.current) { videoRef.current.pause(); videoRef.current.removeAttribute("src"); videoRef.current.load(); }
     selectedRef.current = file;
+    playbackRetryRef.current = { attempts: 0, position: 0 };
     setChosen({ ...file });
     setCompatibleAudio(false);
     setDuration(null);
     setPlayhead(0);
     setScrubTime(null);
     setSourceStart(0);
+    setCompatibleRetry(0);
     setIsPlaying(false);
     setBufferedAhead(0);
     setStatus("buffering");
@@ -153,8 +167,12 @@ export default function Home() {
     if (!chosen) return;
     let cancelled = false;
     void fetch(`/api/torrents/${chosen.hash}/files/${chosen.index}/metadata`)
-      .then((response) => apiJson<{ duration: number | null }>(response))
-      .then((details) => { if (!cancelled) setDuration(details.duration || 0); })
+      .then((response) => apiJson<{ duration: number | null; audioCodec: string | null }>(response))
+      .then((details) => {
+        if (cancelled) return;
+        if (/\.(mkv|avi)$/i.test(chosen.name) && details.audioCodec) setCompatibleAudio(true);
+        setDuration(details.duration || 0);
+      })
       .catch(() => { if (!cancelled) setDuration(0); });
     return () => { cancelled = true; };
   }, [chosen]);
@@ -163,7 +181,7 @@ export default function Home() {
     if (!chosen || duration === null || !videoRef.current) return;
     playerRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     try {
-      videoRef.current.src = `/api/torrents/${chosen.hash}/files/${chosen.index}${compatibleAudio ? `/compatible?start=${sourceStart.toFixed(3)}` : ""}`;
+      videoRef.current.src = `/api/torrents/${chosen.hash}/files/${chosen.index}${compatibleAudio ? `/compatible?start=${sourceStart.toFixed(3)}&retry=${compatibleRetry}` : ""}`;
       videoRef.current.muted = isMuted;
       videoRef.current.volume = volume;
       void videoRef.current.play().then(() => setStatus("playing")).catch(() => setStatus("ready — press play"));
@@ -171,11 +189,12 @@ export default function Home() {
       setStreamError(error instanceof Error ? error.message : "This file cannot play in your browser.");
       setStatus("playback unavailable");
     }
-  }, [chosen, compatibleAudio, sourceStart, duration]);
+  }, [chosen, compatibleAudio, sourceStart, duration, compatibleRetry]);
 
   function seekTo(seconds: number) {
     if (!chosen || !duration || !Number.isFinite(seconds)) return;
     const target = Math.max(0, Math.min(seconds, duration - 0.1));
+    playbackRetryRef.current = { attempts: 0, position: target };
     setScrubTime(null);
     setPlayhead(target);
     const video = videoRef.current;
@@ -203,6 +222,53 @@ export default function Home() {
       }
     }
     setBufferedAhead(Number.isFinite(ahead) ? Math.max(0, ahead) : 0);
+  }
+
+  function handlePlaybackError(video: HTMLVideoElement) {
+    const error = video.error;
+    if (!chosen || !error || error.code === MediaError.MEDIA_ERR_ABORTED) return;
+    const retry = playbackRetryRef.current;
+    const position = Math.max((compatibleAudio ? sourceStart : 0) + video.currentTime, retry.position);
+    console.warn("Video playback interrupted", { code: error.code, message: error.message, position });
+    clearResumeListener(video);
+    if (position > retry.position + 30) {
+      retry.attempts = 0;
+      retry.position = position;
+    }
+    // A file that has already played is usable. A later media error can be a
+    // broken range response, so reopen the stream at the same position.
+    if (position > 1 && (!duration || position < duration - 1) && retry.attempts < 2) {
+      retry.attempts++;
+      retry.position = position;
+      setStatus("reconnecting stream");
+      setStreamError("");
+      if (compatibleAudio) {
+        setSourceStart(position);
+        setCompatibleRetry((value) => value + 1);
+        return;
+      }
+      const resume = () => {
+        resumeListenerRef.current = null;
+        try {
+          video.currentTime = position;
+          void video.play().catch(() => setStatus("ready — press play"));
+        } catch {
+          setStatus("ready — press play");
+        }
+      };
+      resumeListenerRef.current = resume;
+      video.addEventListener("loadedmetadata", resume, { once: true });
+      video.src = `/api/torrents/${chosen.hash}/files/${chosen.index}?retry=${retry.attempts}`;
+      video.load();
+      return;
+    }
+    const messages: Record<number, string> = {
+      [MediaError.MEDIA_ERR_NETWORK]: "The video connection was interrupted. Try selecting the file again.",
+      [MediaError.MEDIA_ERR_DECODE]: "The browser could not decode part of this video.",
+      [MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED]: "The video stream ended unexpectedly or its format is unsupported.",
+    };
+    setStreamError(messages[error.code] || "Video playback stopped unexpectedly.");
+    setStatus("playback stopped");
   }
 
   async function start(result: Result) {
@@ -313,7 +379,7 @@ export default function Home() {
               onPlay={() => { setIsPlaying(true); setStatus("playing"); }}
               onPause={() => setIsPlaying(false)}
               onEnded={() => { setIsPlaying(false); setStatus("finished"); }}
-              onError={() => { setStreamError("This video format or codec is not supported by your browser."); setStatus("playback unavailable"); }}
+              onError={(event) => handlePlaybackError(event.currentTarget)}
             /><div className="video-status">{status}</div></div>
             <div className="player-controls">
               <button type="button" aria-label={isPlaying ? "Pause video" : "Play video"} onClick={() => { const video = videoRef.current; if (!video) return; if (video.paused) void video.play(); else video.pause(); }}>{isPlaying ? "Ⅱ" : "▶"}</button>
@@ -330,8 +396,8 @@ export default function Home() {
               <button type="button" aria-label="Fullscreen" onClick={() => void surfaceRef.current?.requestFullscreen()}>⛶</button>
             </div>
           </div>
-          {!compatibleAudio && /\.(mkv|avi|mov|mp4|m4v)$/i.test(chosen.name) && <button type="button" className="secondary-button" onClick={() => { const now = videoRef.current?.currentTime || 0; setSourceStart(now); setPlayhead(now); setCompatibleAudio(true); setStatus("converting audio"); setStreamError(""); }}>Picture plays but no sound? Play with AAC audio</button>}
-          {compatibleAudio && <p className="note">Audio is converted to stereo AAC while you watch. Use the timeline to seek to another point.</p>}
+          {!compatibleAudio && /\.(mkv|avi|mov|mp4|m4v)$/i.test(chosen.name) && <button type="button" className="secondary-button" onClick={() => { const now = videoRef.current?.currentTime || 0; playbackRetryRef.current = { attempts: 0, position: now }; setSourceStart(now); setPlayhead(now); setCompatibleAudio(true); setStatus("converting audio"); setStreamError(""); }}>Picture plays but no sound? Play with AAC audio</button>}
+          {compatibleAudio && <><p className="note">Audio is converted to stereo AAC while you watch. Use the timeline to seek to another point.</p><button type="button" className="secondary-button" onClick={() => { playbackRetryRef.current = { attempts: 0, position: 0 }; setCompatibleAudio(false); setSourceStart(0); setPlayhead(0); setStatus("buffering original stream"); setStreamError(""); }}>Try original stream from start</button></>}
           {streamError && <p className="error" role="alert">{streamError}</p>}
           <div className="stream-meta"><span><b>{Math.round(stats.progress)}%</b> of this file cached</span><span><b>{formatBytes(stats.downloaded)}</b> of {formatBytes(chosen.length)} on server</span>{stats.downloaded >= chosen.length ? <span>File cached on server</span> : <span><b>{formatBytes(stats.speed)}/s</b> torrent download</span>}<span><b>{Math.round(bufferedAhead)}s</b> buffered for playback</span><span><b>{stats.peers}</b> peers</span></div>
           <a className="magnet-link" href={active.magnet}>Open magnet in desktop client ↗</a>
