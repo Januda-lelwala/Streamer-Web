@@ -38,6 +38,6 @@ The Worker proxies metadata and video range requests to the [Node torrent backen
 
 The backend needs reachable BitTorrent peers, and the video must use a codec supported by the visitor's browser. The page offers a magnet link for a desktop torrent client when playback is unavailable.
 
-The browser saves the last selected torrent, video file, playback position, and audio mode in local storage with no expiration date. When the visitor returns, **Continue** reconnects the torrent and resumes playback. This record belongs to that browser profile; it does not sync across devices and is removed if the visitor clears the site's data. The backend can still release idle torrent connections to stay within its server limits, then reconnect them when the visitor continues.
+The browser saves the last selected torrent and video file in local storage with no expiration date. When the visitor returns, **Reopen** reconnects the torrent and opens that file from the beginning. This selection belongs to that browser profile; it does not sync across devices and is removed if the visitor clears the site's data. The backend can still release idle torrent connections to stay within its server limits, then reconnect them when the visitor reopens the file.
 
 Only search for and stream content you have permission to access.
