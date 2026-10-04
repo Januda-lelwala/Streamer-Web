@@ -7,9 +7,28 @@ type SearchResponse = { results: Result[]; page: number; totalPages: number; tot
 type PlayableFile = { name: string; path?: string; length: number; downloaded: number; hash: string; index: number };
 type BackendSnapshot = { infoHash: string; status: "loading" | "ready" | "error"; error: string | null; files: { index: number; name: string; path?: string; length: number; downloaded: number }[]; progress: number; downloaded: number; speed: number; peers: number };
 type Folder = { name: string; folders: Map<string, Folder>; files: PlayableFile[] };
+type SavedSession = { version: 1; hash: string; title: string; fileIndex: number; fileName: string; position: number; compatibleAudio: boolean };
 
 const DEMO_MAGNET = "magnet:?xt=urn:btih:08ada5a7a6183aae1e09d831df6748d566095a10&dn=Sintel&tr=wss%3A%2F%2Ftracker.btorrent.xyz&tr=wss%3A%2F%2Ftracker.openwebtorrent.com&ws=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2F&xs=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2Fsintel.torrent";
 const videoExt = /\.(mp4|m4v|webm|ogv|mov|mkv|avi)$/i;
+const SESSION_KEY = "streamer:last-session:v1";
+
+function loadSavedSession(): SavedSession | null {
+  try {
+    const value = JSON.parse(localStorage.getItem(SESSION_KEY) || "null");
+    if (value?.version !== 1 || !/^[a-f\d]{40}$/i.test(value.hash) ||
+      typeof value.title !== "string" || value.title.length > 500 ||
+      typeof value.fileName !== "string" || value.fileName.length > 500 ||
+      !Number.isSafeInteger(value.fileIndex) || value.fileIndex < 0 ||
+      !Number.isFinite(value.position) || value.position < 0 || value.position > 86400 ||
+      typeof value.compatibleAudio !== "boolean") return null;
+    return { ...value, hash: value.hash.toLowerCase() } as SavedSession;
+  } catch { return null; }
+}
+
+function storeSavedSession(session: SavedSession) {
+  try { localStorage.setItem(SESSION_KEY, JSON.stringify(session)); } catch { /* Browser storage may be unavailable. */ }
+}
 
 function formatBytes(bytes: number) {
   if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
@@ -86,6 +105,7 @@ export default function Home() {
   const [volume, setVolume] = useState(1);
   const [bufferedAhead, setBufferedAhead] = useState(0);
   const [stats, setStats] = useState({ progress: 0, downloaded: 0, speed: 0, peers: 0 });
+  const [savedSession, setSavedSession] = useState<SavedSession | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const surfaceRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<HTMLElement>(null);
@@ -94,6 +114,48 @@ export default function Home() {
   const selectedRef = useRef<PlayableFile | null>(null);
   const playbackRetryRef = useRef({ attempts: 0, position: 0 });
   const resumeListenerRef = useRef<(() => void) | null>(null);
+  const pendingPositionRef = useRef<number | null>(null);
+  const preferredModeRef = useRef<boolean | null>(null);
+  const lastSavedKeyRef = useRef("");
+  const currentSessionRef = useRef<{ active: Result; chosen: PlayableFile; position: number; compatibleAudio: boolean; sourceStart: number } | null>(null);
+  currentSessionRef.current = active && chosen ? { active, chosen, position: playhead, compatibleAudio, sourceStart } : null;
+
+  useEffect(() => { setSavedSession(loadSavedSession()); }, []);
+
+  function makeSavedSession(result: Result, file: PlayableFile, position: number, audioMode: boolean): SavedSession {
+    return {
+      version: 1, hash: file.hash, title: result.name, fileIndex: file.index,
+      fileName: file.name, position: Math.max(0, Number.isFinite(position) ? position : 0), compatibleAudio: audioMode,
+    };
+  }
+
+  function saveCurrentSession(position = playhead) {
+    if (!active || !chosen || pendingPositionRef.current !== null) return;
+    const session = makeSavedSession(active, chosen, position, compatibleAudio);
+    storeSavedSession(session);
+    setSavedSession(session);
+    lastSavedKeyRef.current = `${session.hash}:${session.fileIndex}:${session.compatibleAudio}:${Math.floor(session.position / 5)}`;
+  }
+
+  useEffect(() => {
+    if (!active || !chosen || pendingPositionRef.current !== null) return;
+    const key = `${chosen.hash}:${chosen.index}:${compatibleAudio}:${Math.floor(playhead / 5)}`;
+    if (key !== lastSavedKeyRef.current) saveCurrentSession();
+  }, [active, chosen, playhead, compatibleAudio]);
+
+  useEffect(() => {
+    const saveOnLeave = () => {
+      const current = currentSessionRef.current;
+      if (!current) return;
+      const video = videoRef.current;
+      const sameFile = video?.currentSrc.includes(`/torrents/${current.chosen.hash}/files/${current.chosen.index}`);
+      const position = pendingPositionRef.current ?? (video && sameFile
+        ? (current.compatibleAudio ? current.sourceStart : 0) + video.currentTime : current.position);
+      storeSavedSession(makeSavedSession(current.active, current.chosen, position, current.compatibleAudio));
+    };
+    window.addEventListener("pagehide", saveOnLeave);
+    return () => window.removeEventListener("pagehide", saveOnLeave);
+  }, []);
 
   function clearResumeListener(video: HTMLVideoElement | null) {
     if (video && resumeListenerRef.current) video.removeEventListener("loadedmetadata", resumeListenerRef.current);
@@ -101,6 +163,9 @@ export default function Home() {
   }
 
   function stop() {
+    if (active && chosen && videoRef.current) {
+      saveCurrentSession((compatibleAudio ? sourceStart : 0) + videoRef.current.currentTime);
+    }
     requestRef.current++;
     if (intervalRef.current) clearInterval(intervalRef.current);
     intervalRef.current = null;
@@ -111,6 +176,8 @@ export default function Home() {
     setChosen(null);
     selectedRef.current = null;
     playbackRetryRef.current = { attempts: 0, position: 0 };
+    pendingPositionRef.current = null;
+    preferredModeRef.current = null;
     setCompatibleAudio(false);
     setDuration(null);
     setPlayhead(0);
@@ -145,17 +212,24 @@ export default function Home() {
 
   function submitSearch(event: FormEvent) { event.preventDefault(); void doSearch(); }
 
-  function playFile(file: PlayableFile) {
+  function playFile(file: PlayableFile, resume?: SavedSession) {
+    if (active && chosen && videoRef.current) {
+      saveCurrentSession((compatibleAudio ? sourceStart : 0) + videoRef.current.currentTime);
+    }
     clearResumeListener(videoRef.current);
     if (videoRef.current) { videoRef.current.pause(); videoRef.current.removeAttribute("src"); videoRef.current.load(); }
+    const position = resume?.position || 0;
+    const audioMode = resume?.compatibleAudio || false;
     selectedRef.current = file;
-    playbackRetryRef.current = { attempts: 0, position: 0 };
+    playbackRetryRef.current = { attempts: 0, position };
+    pendingPositionRef.current = !audioMode && position > 0 ? position : null;
+    preferredModeRef.current = resume ? audioMode : null;
     setChosen({ ...file });
-    setCompatibleAudio(false);
+    setCompatibleAudio(audioMode);
     setDuration(null);
-    setPlayhead(0);
+    setPlayhead(position);
     setScrubTime(null);
-    setSourceStart(0);
+    setSourceStart(audioMode ? position : 0);
     setCompatibleRetry(0);
     setIsPlaying(false);
     setBufferedAhead(0);
@@ -170,7 +244,7 @@ export default function Home() {
       .then((response) => apiJson<{ duration: number | null; audioCodec: string | null }>(response))
       .then((details) => {
         if (cancelled) return;
-        if (/\.(mkv|avi)$/i.test(chosen.name) && details.audioCodec) setCompatibleAudio(true);
+        if (preferredModeRef.current === null && /\.(mkv|avi)$/i.test(chosen.name) && details.audioCodec) setCompatibleAudio(true);
         setDuration(details.duration || 0);
       })
       .catch(() => { if (!cancelled) setDuration(0); });
@@ -184,7 +258,11 @@ export default function Home() {
       videoRef.current.src = `/api/torrents/${chosen.hash}/files/${chosen.index}${compatibleAudio ? `/compatible?start=${sourceStart.toFixed(3)}&retry=${compatibleRetry}` : ""}`;
       videoRef.current.muted = isMuted;
       videoRef.current.volume = volume;
-      void videoRef.current.play().then(() => setStatus("playing")).catch(() => setStatus("ready — press play"));
+      if (pendingPositionRef.current !== null && !compatibleAudio) {
+        videoRef.current.load();
+      } else {
+        void videoRef.current.play().then(() => setStatus("playing")).catch(() => setStatus("ready — press play"));
+      }
     } catch (error) {
       setStreamError(error instanceof Error ? error.message : "This file cannot play in your browser.");
       setStatus("playback unavailable");
@@ -204,6 +282,8 @@ export default function Home() {
       video.pause();
       video.removeAttribute("src");
       video.load();
+      preferredModeRef.current = true;
+      pendingPositionRef.current = null;
       setSourceStart(target);
       setCompatibleAudio(true);
       setStatus("buffering at selected time");
@@ -271,15 +351,15 @@ export default function Home() {
     setStatus("playback stopped");
   }
 
-  async function start(result: Result) {
+  async function start(result: Result, resume?: SavedSession) {
     stop();
     const request = requestRef.current;
     setActive(result);
     setStatus("connecting to torrent peers");
-    await startBackend(result, request);
+    await startBackend(result, request, resume);
   }
 
-  async function startBackend(result: Result, request: number): Promise<void> {
+  async function startBackend(result: Result, request: number, resume?: SavedSession): Promise<void> {
     const hash = new URL(result.magnet).searchParams.get("xt")?.match(/^urn:btih:([a-f\d]{40})$/i)?.[1];
     if (!hash) {
       setStreamError("This magnet link has an invalid torrent identifier.");
@@ -315,7 +395,10 @@ export default function Home() {
           .sort((a, b) => (a.path || a.name).localeCompare(b.path || b.name, undefined, { numeric: true, sensitivity: "base" }))
           .map((file) => ({ ...file, hash: snapshot.infoHash }));
         setFiles(videos);
-        if (!videos.length) {
+        const resumedFile = resume?.hash === snapshot.infoHash ? videos.find((file) => file.index === resume.fileIndex) : null;
+        if (resumedFile) {
+          playFile(resumedFile, resume);
+        } else if (!videos.length) {
           setStatus("no video files");
           setStreamError("This torrent does not contain a recognized video file.");
         } else {
@@ -367,18 +450,32 @@ export default function Home() {
           </form>
           {searchError && <p className="error" role="alert">{searchError}</p>}
           <div className="hero-foot"><span>Have a magnet link?</span><button className="text-button" onClick={() => { const magnet = window.prompt("Paste a magnet link"); if (magnet && /^magnet:\?xt=urn:btih:[a-f\d]{40}/i.test(magnet)) void start({ ...demo, name: new URL(magnet).searchParams.get("dn") || "Custom magnet", magnet }); else if (magnet) setSearchError("That is not a valid magnet link."); }}>Paste a magnet link ↗</button></div>
+          {!active && savedSession && <button type="button" className="secondary-button" onClick={() => void start({ name: savedSession.title, magnet: `magnet:?xt=urn:btih:${savedSession.hash}&dn=${encodeURIComponent(savedSession.title)}`, size: "", seeds: 0, peers: 0, files: 0 }, savedSession)}>Continue {savedSession.fileName} at {formatTime(savedSession.position)} →</button>}
         </section>
 
         {active && chosen && <section className="player-panel" aria-label="Now streaming" ref={playerRef}>
           <div className="section-heading"><div><p className="eyebrow">NOW STREAMING</p><h2>{active.name}</h2></div><button className="close-button" onClick={stop}>Stop stream ✕</button></div>
           <div className="player-surface" ref={surfaceRef}>
             <div className="video-wrap"><video ref={videoRef} playsInline
-              onLoadedMetadata={(event) => { if (!duration && Number.isFinite(event.currentTarget.duration)) setDuration(event.currentTarget.duration); }}
+              onLoadedMetadata={(event) => {
+                const position = pendingPositionRef.current;
+                if (position !== null && !compatibleAudio) {
+                  pendingPositionRef.current = null;
+                  try {
+                    const mediaDuration = event.currentTarget.duration;
+                    event.currentTarget.currentTime = Number.isFinite(mediaDuration) && mediaDuration > 0
+                      ? Math.min(position, Math.max(0, mediaDuration - 0.1)) : position;
+                    saveCurrentSession(position);
+                    void event.currentTarget.play().catch(() => setStatus("ready — press play"));
+                  } catch { setStatus("ready — press play"); }
+                }
+                if (!duration && Number.isFinite(event.currentTarget.duration)) setDuration(event.currentTarget.duration);
+              }}
               onTimeUpdate={(event) => { setPlayhead((compatibleAudio ? sourceStart : 0) + event.currentTarget.currentTime); updatePlaybackBuffer(event.currentTarget); }}
               onProgress={(event) => updatePlaybackBuffer(event.currentTarget)}
               onPlay={() => { setIsPlaying(true); setStatus("playing"); }}
-              onPause={() => setIsPlaying(false)}
-              onEnded={() => { setIsPlaying(false); setStatus("finished"); }}
+              onPause={(event) => { setIsPlaying(false); saveCurrentSession(event.currentTarget.ended ? 0 : (compatibleAudio ? sourceStart : 0) + event.currentTarget.currentTime); }}
+              onEnded={() => { setIsPlaying(false); setStatus("finished"); saveCurrentSession(0); }}
               onError={(event) => handlePlaybackError(event.currentTarget)}
             /><div className="video-status">{status}</div></div>
             <div className="player-controls">
@@ -396,8 +493,8 @@ export default function Home() {
               <button type="button" aria-label="Fullscreen" onClick={() => void surfaceRef.current?.requestFullscreen()}>⛶</button>
             </div>
           </div>
-          {!compatibleAudio && /\.(mkv|avi|mov|mp4|m4v)$/i.test(chosen.name) && <button type="button" className="secondary-button" onClick={() => { const now = videoRef.current?.currentTime || 0; playbackRetryRef.current = { attempts: 0, position: now }; setSourceStart(now); setPlayhead(now); setCompatibleAudio(true); setStatus("converting audio"); setStreamError(""); }}>Picture plays but no sound? Play with AAC audio</button>}
-          {compatibleAudio && <><p className="note">Audio is converted to stereo AAC while you watch. Use the timeline to seek to another point.</p><button type="button" className="secondary-button" onClick={() => { playbackRetryRef.current = { attempts: 0, position: 0 }; setCompatibleAudio(false); setSourceStart(0); setPlayhead(0); setStatus("buffering original stream"); setStreamError(""); }}>Try original stream from start</button></>}
+          {!compatibleAudio && /\.(mkv|avi|mov|mp4|m4v)$/i.test(chosen.name) && <button type="button" className="secondary-button" onClick={() => { const now = videoRef.current?.currentTime || 0; playbackRetryRef.current = { attempts: 0, position: now }; preferredModeRef.current = true; pendingPositionRef.current = null; setSourceStart(now); setPlayhead(now); setCompatibleAudio(true); setStatus("converting audio"); setStreamError(""); }}>Picture plays but no sound? Play with AAC audio</button>}
+          {compatibleAudio && <><p className="note">Audio is converted to stereo AAC while you watch. Use the timeline to seek to another point.</p><button type="button" className="secondary-button" onClick={() => { playbackRetryRef.current = { attempts: 0, position: 0 }; preferredModeRef.current = false; setCompatibleAudio(false); setSourceStart(0); setPlayhead(0); setStatus("buffering original stream"); setStreamError(""); }}>Try original stream from start</button></>}
           {streamError && <p className="error" role="alert">{streamError}</p>}
           <div className="stream-meta"><span><b>{Math.round(stats.progress)}%</b> of this file cached</span><span><b>{formatBytes(stats.downloaded)}</b> of {formatBytes(chosen.length)} on server</span>{stats.downloaded >= chosen.length ? <span>File cached on server</span> : <span><b>{formatBytes(stats.speed)}/s</b> torrent download</span>}<span><b>{Math.round(bufferedAhead)}s</b> buffered for playback</span><span><b>{stats.peers}</b> peers</span></div>
           <a className="magnet-link" href={active.magnet}>Open magnet in desktop client ↗</a>
