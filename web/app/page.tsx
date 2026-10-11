@@ -8,9 +8,12 @@ type PlayableFile = { name: string; path?: string; length: number; downloaded: n
 type BackendSnapshot = { infoHash: string; status: "loading" | "ready" | "error"; error: string | null; files: { index: number; name: string; path?: string; length: number; downloaded: number }[]; progress: number; downloaded: number; speed: number; peers: number };
 type Folder = { name: string; folders: Map<string, Folder>; files: PlayableFile[] };
 type SavedSelection = { version: 1; hash: string; title: string; fileIndex: number; fileName: string };
+type SubtitleTrack = { index: number; language: string | null; title: string | null };
+type SubtitleCue = { start: number; end: number; text: string };
 
 const DEMO_MAGNET = "magnet:?xt=urn:btih:08ada5a7a6183aae1e09d831df6748d566095a10&dn=Sintel&tr=wss%3A%2F%2Ftracker.btorrent.xyz&tr=wss%3A%2F%2Ftracker.openwebtorrent.com&ws=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2F&xs=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2Fsintel.torrent";
 const videoExt = /\.(mp4|m4v|webm|ogv|mov|mkv|avi)$/i;
+const subtitleExt = /\.(srt|vtt|ass|ssa)$/i;
 const SELECTION_KEY = "streamer:last-selection:v1";
 const LEGACY_SESSION_KEY = "streamer:last-session:v1";
 
@@ -50,6 +53,30 @@ function formatTime(seconds: number) {
   const minutes = Math.floor((total % 3600) / 60);
   const rest = String(total % 60).padStart(2, "0");
   return hours ? `${hours}:${String(minutes).padStart(2, "0")}:${rest}` : `${minutes}:${rest}`;
+}
+
+function parseSubtitleTime(value: string) {
+  const parts = value.replace(",", ".").split(":").map(Number);
+  if (parts.length < 2 || parts.length > 3 || parts.some((part) => !Number.isFinite(part))) return NaN;
+  return parts.reduce((seconds, part) => seconds * 60 + part, 0);
+}
+
+function parseSubtitles(source: string): SubtitleCue[] {
+  const cues: SubtitleCue[] = [];
+  for (const block of source.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n").split(/\n\s*\n/)) {
+    const lines = block.split("\n");
+    const timingIndex = lines.findIndex((line) => line.includes("-->"));
+    if (timingIndex < 0) continue;
+    const timing = lines[timingIndex].match(/(\d{1,2}:)?\d{2}:\d{2}[.,]\d{3}\s*-->\s*(\d{1,2}:)?\d{2}:\d{2}[.,]\d{3}/);
+    if (!timing) continue;
+    const [startText, endText] = timing[0].split(/\s*-->\s*/);
+    const start = parseSubtitleTime(startText);
+    const end = parseSubtitleTime(endText);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) continue;
+    const text = lines.slice(timingIndex + 1).join("\n").replace(/<[^>]*>/g, "").trim();
+    if (text) cues.push({ start, end, text });
+  }
+  return cues;
 }
 
 async function apiJson<T>(response: Response): Promise<T> {
@@ -100,7 +127,14 @@ export default function Home() {
   const [status, setStatus] = useState("idle");
   const [streamError, setStreamError] = useState("");
   const [files, setFiles] = useState<PlayableFile[]>([]);
+  const [subtitleFiles, setSubtitleFiles] = useState<PlayableFile[]>([]);
   const [chosen, setChosen] = useState<PlayableFile | null>(null);
+  const [embeddedSubtitles, setEmbeddedSubtitles] = useState<SubtitleTrack[]>([]);
+  const [selectedSubtitle, setSelectedSubtitle] = useState("");
+  const [subtitleCues, setSubtitleCues] = useState<SubtitleCue[]>([]);
+  const [localSubtitleCues, setLocalSubtitleCues] = useState<SubtitleCue[]>([]);
+  const [subtitleError, setSubtitleError] = useState("");
+  const [localSubtitleName, setLocalSubtitleName] = useState("");
   const [compatibleAudio, setCompatibleAudio] = useState(false);
   const [duration, setDuration] = useState<number | null>(null);
   const [playhead, setPlayhead] = useState(0);
@@ -147,7 +181,14 @@ export default function Home() {
     if (videoRef.current) { videoRef.current.pause(); videoRef.current.removeAttribute("src"); videoRef.current.load(); }
     setActive(null);
     setFiles([]);
+    setSubtitleFiles([]);
     setChosen(null);
+    setEmbeddedSubtitles([]);
+    setSelectedSubtitle("");
+    setSubtitleCues([]);
+    setLocalSubtitleCues([]);
+    setSubtitleError("");
+    setLocalSubtitleName("");
     selectedRef.current = null;
     playbackRetryRef.current = { attempts: 0, position: 0 };
     setCompatibleAudio(false);
@@ -190,6 +231,12 @@ export default function Home() {
     selectedRef.current = file;
     playbackRetryRef.current = { attempts: 0, position: 0 };
     setChosen({ ...file });
+    setEmbeddedSubtitles([]);
+    setSelectedSubtitle("");
+    setSubtitleCues([]);
+    setLocalSubtitleCues([]);
+    setSubtitleError("");
+    setLocalSubtitleName("");
     setCompatibleAudio(false);
     setDuration(null);
     setPlayhead(0);
@@ -206,15 +253,55 @@ export default function Home() {
     if (!chosen) return;
     let cancelled = false;
     void fetch(`/api/torrents/${chosen.hash}/files/${chosen.index}/metadata`)
-      .then((response) => apiJson<{ duration: number | null; audioCodec: string | null }>(response))
+      .then((response) => apiJson<{ duration: number | null; audioCodec: string | null; subtitles?: SubtitleTrack[] }>(response))
       .then((details) => {
         if (cancelled) return;
         if (/\.(mkv|avi)$/i.test(chosen.name) && details.audioCodec) setCompatibleAudio(true);
         setDuration(details.duration || 0);
+        setEmbeddedSubtitles(details.subtitles || []);
       })
       .catch(() => { if (!cancelled) setDuration(0); });
     return () => { cancelled = true; };
   }, [chosen]);
+
+  useEffect(() => {
+    if (!chosen || !selectedSubtitle || selectedSubtitle === "local") return;
+    const controller = new AbortController();
+    setSubtitleCues([]);
+    setSubtitleError("");
+    const [kind, value] = selectedSubtitle.split(":");
+    const index = kind === "file" ? Number(value) : chosen.index;
+    const suffix = kind === "embedded" ? `?stream=${encodeURIComponent(value)}` : "";
+    void fetch(`/api/torrents/${chosen.hash}/files/${index}/subtitles${suffix}`, { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("Could not load this subtitle track.");
+        return response.text();
+      })
+      .then((body) => {
+        const cues = parseSubtitles(body);
+        if (!cues.length) throw new Error("This subtitle track has no readable captions.");
+        setSubtitleCues(cues);
+      })
+      .catch((error) => { if (!controller.signal.aborted) setSubtitleError(error instanceof Error ? error.message : "Could not load subtitles."); });
+    return () => controller.abort();
+  }, [chosen, selectedSubtitle]);
+
+  async function loadLocalSubtitle(file: File | undefined) {
+    if (!file) return;
+    setSubtitleError("");
+    if (!/\.(srt|vtt)$/i.test(file.name) || file.size > 2 * 1024 * 1024) {
+      setSubtitleError("Choose an SRT or VTT file under 2 MB.");
+      return;
+    }
+    try {
+      const cues = parseSubtitles(await file.text());
+      if (!cues.length) throw new Error("This file has no readable captions.");
+      setLocalSubtitleName(file.name);
+      setLocalSubtitleCues(cues);
+      setSubtitleCues(cues);
+      setSelectedSubtitle("local");
+    } catch (error) { setSubtitleError(error instanceof Error ? error.message : "Could not read subtitles."); }
+  }
 
   useEffect(() => {
     if (!chosen || duration === null || !videoRef.current) return;
@@ -354,6 +441,8 @@ export default function Home() {
           .sort((a, b) => (a.path || a.name).localeCompare(b.path || b.name, undefined, { numeric: true, sensitivity: "base" }))
           .map((file) => ({ ...file, hash: snapshot.infoHash }));
         setFiles(videos);
+        setSubtitleFiles(snapshot.files.filter((file) => subtitleExt.test(file.name))
+          .map((file) => ({ ...file, hash: snapshot.infoHash })));
         const savedFile = reopen?.hash === snapshot.infoHash ? videos.find((file) => file.index === reopen.fileIndex) : null;
         if (savedFile) {
           playFile(savedFile);
@@ -389,6 +478,16 @@ export default function Home() {
   }
 
   const demo: Result = { name: "Sintel — public demo", size: "Public demo", seeds: 0, peers: 0, files: 1, magnet: DEMO_MAGNET };
+  const chosenPath = chosen?.path || chosen?.name || "";
+  const videoDirectory = chosenPath.slice(0, Math.max(chosenPath.lastIndexOf("/"), chosenPath.lastIndexOf("\\")) + 1);
+  const videoStem = chosen?.name.replace(videoExt, "").toLowerCase() || "";
+  const matchingSubtitles = subtitleFiles.filter((file) => {
+    const path = file.path || file.name;
+    const directory = path.slice(0, Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) + 1);
+    const stem = file.name.replace(subtitleExt, "").toLowerCase();
+    return directory === videoDirectory && (stem === videoStem || stem.startsWith(`${videoStem}.`) || stem.startsWith(`${videoStem}-`) || files.length === 1);
+  });
+  const activeCaptions = selectedSubtitle && subtitleCues.filter((cue) => cue.start <= playhead && playhead < cue.end).map((cue) => cue.text).join("\n");
 
   return (
     <div className="shell">
@@ -423,7 +522,7 @@ export default function Home() {
               onPause={() => setIsPlaying(false)}
               onEnded={() => { setIsPlaying(false); setStatus("finished"); }}
               onError={(event) => handlePlaybackError(event.currentTarget)}
-            /><div className="video-status">{status}</div></div>
+            /><div className="video-status">{status}</div>{activeCaptions && <div className="video-captions" aria-live="off">{activeCaptions}</div>}</div>
             <div className="player-controls">
               <button type="button" aria-label={isPlaying ? "Pause video" : "Play video"} onClick={() => { const video = videoRef.current; if (!video) return; if (video.paused) void video.play(); else video.pause(); }}>{isPlaying ? "Ⅱ" : "▶"}</button>
               <span className="player-time">{formatTime(scrubTime ?? playhead)}</span>
@@ -435,10 +534,18 @@ export default function Home() {
               <span className="player-time">{duration === null ? "Loading…" : formatTime(duration)}</span>
               <button type="button" aria-label={isMuted ? "Unmute" : "Mute"} onClick={() => { const next = !isMuted; setIsMuted(next); if (videoRef.current) videoRef.current.muted = next; }}>{isMuted ? "🔇" : "🔊"}</button>
               <input className="player-volume" type="range" aria-label="Volume" min={0} max={1} step={0.05} value={volume} onChange={(event) => { const next = Number(event.currentTarget.value); setVolume(next); setIsMuted(next === 0); if (videoRef.current) { videoRef.current.volume = next; videoRef.current.muted = next === 0; } }} />
+              <select aria-label="Subtitles" value={selectedSubtitle} onChange={(event) => { const value = event.currentTarget.value; setSelectedSubtitle(value); setSubtitleCues(value === "local" ? localSubtitleCues : []); setSubtitleError(""); }}>
+                <option value="">Subtitles off</option>
+                {matchingSubtitles.map((file) => <option key={file.index} value={`file:${file.index}`}>{file.name}</option>)}
+                {embeddedSubtitles.map((track) => <option key={track.index} value={`embedded:${track.index}`}>{track.title || track.language || `Track ${track.index}`} (embedded)</option>)}
+                {localSubtitleName && <option value="local">{localSubtitleName} (local)</option>}
+              </select>
+              <label className="subtitle-upload">Load SRT/VTT<input type="file" accept=".srt,.vtt,text/vtt" onChange={(event) => { void loadLocalSubtitle(event.currentTarget.files?.[0]); event.currentTarget.value = ""; }} /></label>
               <select aria-label="Playback speed" defaultValue="1" onChange={(event) => { if (videoRef.current) videoRef.current.playbackRate = Number(event.currentTarget.value); }}><option value="0.75">0.75×</option><option value="1">1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option></select>
               <button type="button" aria-label="Fullscreen" onClick={() => void surfaceRef.current?.requestFullscreen()}>⛶</button>
             </div>
           </div>
+          {subtitleError && <p className="error" role="alert">{subtitleError}</p>}
           {!compatibleAudio && /\.(mkv|avi|mov|mp4|m4v)$/i.test(chosen.name) && <button type="button" className="secondary-button" onClick={() => { const now = videoRef.current?.currentTime || 0; playbackRetryRef.current = { attempts: 0, position: now }; setSourceStart(now); setPlayhead(now); setCompatibleAudio(true); setStatus("converting audio"); setStreamError(""); }}>Picture plays but no sound? Play with AAC audio</button>}
           {compatibleAudio && <><p className="note">Audio is converted to stereo AAC while you watch. Use the timeline to seek to another point.</p><button type="button" className="secondary-button" onClick={() => { playbackRetryRef.current = { attempts: 0, position: 0 }; setCompatibleAudio(false); setSourceStart(0); setPlayhead(0); setStatus("buffering original stream"); setStreamError(""); }}>Try original stream from start</button></>}
           {streamError && <p className="error" role="alert">{streamError}</p>}

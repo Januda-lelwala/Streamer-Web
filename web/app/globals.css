@@ -61,12 +61,17 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .video-wrap { position: relative; background: #03080f; aspect-ratio: 16/9; max-height: 560px; border-radius: 9px; overflow: hidden; }
 .video-wrap video { width: 100%; height: 100%; background: #03080f; }
 .video-status { position: absolute; top: 14px; left: 14px; padding: 7px 10px; color: #c4ebf5; background: #0a1829df; border: 1px solid #284f62; border-radius: 5px; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; pointer-events: none; }
+.video-captions { position: absolute; bottom: 5%; left: 5%; width: 90%; color: white; font-size: clamp(16px, 2.4vw, 28px); font-weight: 700; line-height: 1.3; text-align: center; white-space: pre-line; text-shadow: 0 2px 4px black, 0 0 12px black; pointer-events: none; }
 .player-surface { background: #07111e; border-radius: 9px; overflow: hidden; }
 .player-surface:fullscreen { display: flex; flex-direction: column; border-radius: 0; }
 .player-surface:fullscreen .video-wrap { flex: 1; aspect-ratio: auto; max-height: none; min-height: 0; }
 .player-controls { display: flex; align-items: center; gap: 10px; padding: 10px 12px; color: #e4f5fa; }
 .player-controls button, .player-controls select { flex: none; border: 1px solid #3b5a70; border-radius: 6px; background: #193044; color: #e4f5fa; min-height: 31px; padding: 3px 8px; cursor: pointer; }
+.player-controls select[aria-label="Subtitles"] { max-width: min(190px, 45vw); }
 .player-controls button:hover, .player-controls select:hover { background: #28506a; }
+.subtitle-upload { flex: none; border: 1px solid #3b5a70; border-radius: 6px; background: #193044; color: #e4f5fa; min-height: 31px; padding: 6px 8px; cursor: pointer; font-size: 12px; }
+.subtitle-upload:hover { background: #28506a; }
+.subtitle-upload input { position: absolute; width: 1px; height: 1px; opacity: 0; }
 .player-controls input { accent-color: #56d6f5; cursor: pointer; }
 .player-controls input:disabled { cursor: wait; opacity: .5; }
 .player-seek { flex: 1; min-width: 50px; }

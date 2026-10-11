@@ -12,7 +12,7 @@ function probe(entry, hash, index) {
   return new Promise((resolve, reject) => {
     const child = spawn("ffprobe", [
       "-v", "error", "-headers", source.headers,
-      "-show_entries", "format=duration:stream=codec_type,codec_name,channels",
+      "-show_entries", "format=duration:stream=index,codec_type,codec_name,channels:stream_tags=language,title",
       "-of", "json", source.url,
     ], { stdio: ["ignore", "pipe", "pipe"] });
     let output = "";
@@ -35,6 +35,9 @@ function probe(entry, hash, index) {
           duration: Number.isFinite(duration) && duration > 0 ? duration : null,
           videoCodec: data.streams?.find((stream) => stream.codec_type === "video")?.codec_name || null,
           audioCodec: data.streams?.find((stream) => stream.codec_type === "audio")?.codec_name || null,
+          subtitles: data.streams?.filter((stream) => stream.codec_type === "subtitle" &&
+            ["subrip", "ass", "ssa", "webvtt", "mov_text"].includes(stream.codec_name))
+            .map((stream) => ({ index: stream.index, language: stream.tags?.language || null, title: stream.tags?.title || null })) || [],
         });
       } catch (cause) { reject(cause); }
     });
