@@ -28,6 +28,9 @@ export async function GET(request, { params }) {
   if ((globalThis.__streamerAudioTranscodes || 0) >= 2) {
     return Response.json({ error: "Compatible audio is busy. Try again shortly." }, { status: 503 });
   }
+  let videoCodec = null;
+  try { videoCodec = (await entry.mediaMetadata?.get(index))?.videoCodec; }
+  catch { /* A failed probe should not prevent playback. */ }
   selectPlaybackFile(entry, Number(index));
   globalThis.__streamerAudioTranscodes = (globalThis.__streamerAudioTranscodes || 0) + 1;
   const finish = beginStream(entry);
@@ -35,7 +38,8 @@ export async function GET(request, { params }) {
   const encoder = spawn("ffmpeg", [
     "-nostdin", "-loglevel", "error", "-headers", source.headers,
     ...(start ? ["-ss", start.toFixed(3)] : []), "-i", source.url,
-    "-map", "0:v:0", "-map", "0:a:0", "-c:v", "copy", "-tag:v", "hvc1",
+    "-map", "0:v:0", "-map", "0:a:0?", "-c:v", "copy",
+    ...(videoCodec === "hevc" ? ["-tag:v", "hvc1"] : []),
     "-c:a", "aac", "-ac", "2", "-b:a", "192k",
     "-f", "mp4", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "pipe:1",
   ], { stdio: ["ignore", "pipe", "pipe"] });
@@ -43,11 +47,14 @@ export async function GET(request, { params }) {
   const close = () => {
     if (closed) return;
     closed = true;
+    request.signal.removeEventListener("abort", close);
     encoder.kill();
     finish();
     globalThis.__streamerAudioTranscodes--;
   };
+  request.signal.addEventListener("abort", close, { once: true });
   encoder.on("error", close);
+  encoder.on("close", close);
   encoder.stderr.on("data", (chunk) => console.error("Compatible playback failed:", String(chunk).slice(0, 500)));
 
   const reader = Readable.toWeb(encoder.stdout).getReader();
@@ -59,7 +66,7 @@ export async function GET(request, { params }) {
         else controller.enqueue(value);
       } catch (error) { close(); controller.error(error); }
     },
-    async cancel(reason) { await reader.cancel(reason); close(); },
+    async cancel(reason) { close(); await reader.cancel(reason); },
   });
   return new Response(body, {
     headers: {

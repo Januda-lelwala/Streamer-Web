@@ -160,6 +160,7 @@ export default function Home() {
   const requestRef = useRef(0);
   const selectedRef = useRef<PlayableFile | null>(null);
   const playbackRetryRef = useRef({ attempts: 0, position: 0 });
+  const sourceRetryRef = useRef(0);
   const mediaStartRef = useRef(0);
   const resumeListenerRef = useRef<(() => void) | null>(null);
 
@@ -197,6 +198,21 @@ export default function Home() {
   function clearSeekRecoveryIfReady(video: HTMLVideoElement) {
     if (seekRecoveryRef.current && !video.seeking &&
       Math.abs(video.currentTime - playbackRetryRef.current.position) < 1) clearSeekRecovery();
+  }
+
+  function reopenOriginalAt(video: HTMLVideoElement, file: PlayableFile, target: number, shouldPlay: boolean) {
+    clearResumeListener(video);
+    const resume = () => {
+      resumeListenerRef.current = null;
+      try {
+        video.currentTime = target;
+        if (shouldPlay) void video.play().catch(() => setStatus("ready — press play"));
+      } catch { setIsBuffering(false); setStreamError("Could not seek this video. Try selecting it again."); }
+    };
+    resumeListenerRef.current = resume;
+    video.addEventListener("loadedmetadata", resume, { once: true });
+    video.src = `/api/torrents/${file.hash}/files/${file.index}?seek=${++sourceRetryRef.current}`;
+    video.load();
   }
 
   function stop() {
@@ -378,22 +394,7 @@ export default function Home() {
         video.currentTime = target;
       } catch {
         // Duration can arrive from ffprobe before the browser loads metadata.
-        clearResumeListener(video);
-        const resume = () => {
-          resumeListenerRef.current = null;
-          try {
-            video.currentTime = target;
-            if (wasPlaying) void video.play().catch(() => setStatus("ready — press play"));
-          }
-          catch { setIsBuffering(false); setStreamError("Could not seek this video. Try selecting it again."); }
-        };
-        resumeListenerRef.current = resume;
-        if (video.readyState === 0) video.addEventListener("loadedmetadata", resume, { once: true });
-        else {
-          video.src = `/api/torrents/${chosen.hash}/files/${chosen.index}?seek=${Date.now()}`;
-          video.addEventListener("loadedmetadata", resume, { once: true });
-          video.load();
-        }
+        reopenOriginalAt(video, chosen, target, wasPlaying);
       }
       setStatus("buffering at selected time");
       if (/\.(mp4|m4v)$/i.test(chosen.name)) {
@@ -402,11 +403,9 @@ export default function Home() {
           if (selectedRef.current?.index !== chosen.index || videoRef.current !== video) return;
           const ready = video.readyState >= (video.paused ? HTMLMediaElement.HAVE_CURRENT_DATA : HTMLMediaElement.HAVE_FUTURE_DATA);
           if (!video.seeking && ready && Math.abs(video.currentTime - target) < 1) return;
-          setStatus("restarting playback at selected time");
-          setSourceStart(target);
-          setCompatibleAudio(true);
-          setCompatibleRetry((retry) => retry + 1);
-        }, 10000);
+          reopenOriginalAt(video, chosen, target, wasPlaying);
+          setStatus("reconnecting stream at selected time");
+        }, 12000);
       }
     }
   }
@@ -476,8 +475,13 @@ export default function Home() {
       setStatus("reconnecting stream");
       setStreamError("");
       if (compatibleAudio) {
-        setSourceStart(position);
-        setCompatibleRetry((value) => value + 1);
+        // Give the previous encoder time to close before taking a new slot.
+        seekRecoveryRef.current = setTimeout(() => {
+          seekRecoveryRef.current = null;
+          if (selectedRef.current?.hash !== chosen.hash || selectedRef.current.index !== chosen.index) return;
+          setSourceStart(position);
+          setCompatibleRetry((value) => value + 1);
+        }, 800);
         return;
       }
       const resume = () => {
@@ -498,7 +502,9 @@ export default function Home() {
     const messages: Record<number, string> = {
       [MediaError.MEDIA_ERR_NETWORK]: "The video connection was interrupted. Try selecting the file again.",
       [MediaError.MEDIA_ERR_DECODE]: "The browser could not decode part of this video.",
-      [MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED]: "The video stream ended unexpectedly or its format is unsupported.",
+      [MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED]: retry.position > 0
+        ? "The stream could not resume at this point. Try a nearby time or reopen the file."
+        : "The video stream ended unexpectedly or its format is unsupported.",
     };
     setStreamError(messages[error.code] || "Video playback stopped unexpectedly.");
     setStatus("playback stopped");

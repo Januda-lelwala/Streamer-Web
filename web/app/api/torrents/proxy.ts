@@ -14,6 +14,7 @@ export async function proxyTorrent(request: Request) {
     if (request.method === "POST") headers.set("Content-Type", "application/json");
     const upstream = await fetch(destination, {
       method: request.method,
+      signal: request.signal,
       headers,
       body: request.method === "POST" ? await request.text() : undefined,
       cache: "no-store",
