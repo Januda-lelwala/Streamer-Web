@@ -156,9 +156,11 @@ export default function Home() {
   const surfaceRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<HTMLElement>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const seekRecoveryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const requestRef = useRef(0);
   const selectedRef = useRef<PlayableFile | null>(null);
   const playbackRetryRef = useRef({ attempts: 0, position: 0 });
+  const mediaStartRef = useRef(0);
   const resumeListenerRef = useRef<(() => void) | null>(null);
 
   useEffect(() => { setSavedSelection(loadSavedSelection()); }, []);
@@ -187,11 +189,22 @@ export default function Home() {
     resumeListenerRef.current = null;
   }
 
+  function clearSeekRecovery() {
+    if (seekRecoveryRef.current) clearTimeout(seekRecoveryRef.current);
+    seekRecoveryRef.current = null;
+  }
+
+  function clearSeekRecoveryIfReady(video: HTMLVideoElement) {
+    if (seekRecoveryRef.current && !video.seeking &&
+      Math.abs(video.currentTime - playbackRetryRef.current.position) < 1) clearSeekRecovery();
+  }
+
   function stop() {
     requestRef.current++;
     if (intervalRef.current) clearInterval(intervalRef.current);
     intervalRef.current = null;
     clearResumeListener(videoRef.current);
+    clearSeekRecovery();
     if (videoRef.current) { videoRef.current.pause(); videoRef.current.removeAttribute("src"); videoRef.current.load(); }
     setActive(null);
     setFiles([]);
@@ -205,6 +218,7 @@ export default function Home() {
     setLocalSubtitleName("");
     selectedRef.current = null;
     playbackRetryRef.current = { attempts: 0, position: 0 };
+    mediaStartRef.current = 0;
     setCompatibleAudio(false);
     setDuration(null);
     setPlayhead(0);
@@ -224,6 +238,7 @@ export default function Home() {
   useEffect(() => () => {
     requestRef.current++;
     if (intervalRef.current) clearInterval(intervalRef.current);
+    if (seekRecoveryRef.current) clearTimeout(seekRecoveryRef.current);
   }, []);
 
   async function doSearch(page = 1, searchQuery = query) {
@@ -244,9 +259,11 @@ export default function Home() {
 
   function playFile(file: PlayableFile) {
     clearResumeListener(videoRef.current);
+    clearSeekRecovery();
     if (videoRef.current) { videoRef.current.pause(); videoRef.current.removeAttribute("src"); videoRef.current.load(); }
     selectedRef.current = file;
     playbackRetryRef.current = { attempts: 0, position: 0 };
+    mediaStartRef.current = 0;
     setChosen({ ...file });
     setEmbeddedSubtitles([]);
     setSelectedSubtitle("");
@@ -325,6 +342,7 @@ export default function Home() {
     if (!chosen || duration === null || !videoRef.current) return;
     playerRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     try {
+      mediaStartRef.current = compatibleAudio ? sourceStart : 0;
       videoRef.current.src = `/api/torrents/${chosen.hash}/files/${chosen.index}${compatibleAudio ? `/compatible?start=${sourceStart.toFixed(3)}&retry=${compatibleRetry}` : ""}`;
       videoRef.current.muted = isMuted;
       videoRef.current.volume = volume;
@@ -340,6 +358,7 @@ export default function Home() {
 
   function seekTo(seconds: number) {
     if (!chosen || !duration || !Number.isFinite(seconds)) return;
+    clearSeekRecovery();
     const target = Math.max(0, Math.min(seconds, duration - 0.1));
     playbackRetryRef.current = { attempts: 0, position: target };
     setScrubTime(null);
@@ -347,17 +366,48 @@ export default function Home() {
     setIsBuffering(true);
     const video = videoRef.current;
     if (!video) return;
-    const canConvert = /\.(mkv|avi|mov|mp4|m4v)$/i.test(chosen.name);
-    if (compatibleAudio || (canConvert && (/\.(mkv|avi|mov)$/i.test(chosen.name) || !video.seekable.length))) {
-      video.pause();
-      video.removeAttribute("src");
-      video.load();
+    if (compatibleAudio || /\.(mkv|avi|mov)$/i.test(chosen.name)) {
       setSourceStart(target);
       setCompatibleAudio(true);
+      // Restart even when seeking back to the current stream's start.
+      setCompatibleRetry((retry) => retry + 1);
       setStatus("buffering at selected time");
     } else {
-      video.currentTime = target;
+      const wasPlaying = !video.paused;
+      try {
+        video.currentTime = target;
+      } catch {
+        // Duration can arrive from ffprobe before the browser loads metadata.
+        clearResumeListener(video);
+        const resume = () => {
+          resumeListenerRef.current = null;
+          try {
+            video.currentTime = target;
+            if (wasPlaying) void video.play().catch(() => setStatus("ready — press play"));
+          }
+          catch { setIsBuffering(false); setStreamError("Could not seek this video. Try selecting it again."); }
+        };
+        resumeListenerRef.current = resume;
+        if (video.readyState === 0) video.addEventListener("loadedmetadata", resume, { once: true });
+        else {
+          video.src = `/api/torrents/${chosen.hash}/files/${chosen.index}?seek=${Date.now()}`;
+          video.addEventListener("loadedmetadata", resume, { once: true });
+          video.load();
+        }
+      }
       setStatus("buffering at selected time");
+      if (/\.(mp4|m4v)$/i.test(chosen.name)) {
+        seekRecoveryRef.current = setTimeout(() => {
+          seekRecoveryRef.current = null;
+          if (selectedRef.current?.index !== chosen.index || videoRef.current !== video) return;
+          const ready = video.readyState >= (video.paused ? HTMLMediaElement.HAVE_CURRENT_DATA : HTMLMediaElement.HAVE_FUTURE_DATA);
+          if (!video.seeking && ready && Math.abs(video.currentTime - target) < 1) return;
+          setStatus("restarting playback at selected time");
+          setSourceStart(target);
+          setCompatibleAudio(true);
+          setCompatibleRetry((retry) => retry + 1);
+        }, 10000);
+      }
     }
   }
 
@@ -410,9 +460,10 @@ export default function Home() {
     const error = video.error;
     if (!chosen || !error || error.code === MediaError.MEDIA_ERR_ABORTED) return;
     const retry = playbackRetryRef.current;
-    const position = Math.max((compatibleAudio ? sourceStart : 0) + video.currentTime, retry.position);
+    const position = Math.max(mediaStartRef.current + video.currentTime, retry.position);
     console.warn("Video playback interrupted", { code: error.code, message: error.message, position });
     clearResumeListener(video);
+    clearSeekRecovery();
     if (position > retry.position + 30) {
       retry.attempts = 0;
       retry.position = position;
@@ -578,12 +629,14 @@ export default function Home() {
           <div className={`player-surface${showFullscreenControls || settingsOpen ? " fullscreen-controls-visible" : ""}`} ref={surfaceRef} tabIndex={0} onKeyDown={handlePlayerKeyDown} onPointerMove={handlePlayerPointerMove} onPointerLeave={() => setShowFullscreenControls(false)} aria-label="Video player. Space to play or pause, arrow keys to skip 10 seconds, M to mute, F for fullscreen">
             <div className="video-wrap"><video ref={videoRef} playsInline onClick={() => { surfaceRef.current?.focus(); togglePlayback(); }} onDoubleClick={toggleFullscreen}
               onLoadedMetadata={(event) => { if (!duration && Number.isFinite(event.currentTarget.duration)) setDuration(event.currentTarget.duration); }}
-              onTimeUpdate={(event) => { setPlayhead((compatibleAudio ? sourceStart : 0) + event.currentTarget.currentTime); updatePlaybackBuffer(event.currentTarget); }}
+              onTimeUpdate={(event) => { setPlayhead(mediaStartRef.current + event.currentTarget.currentTime); updatePlaybackBuffer(event.currentTarget); }}
               onProgress={(event) => updatePlaybackBuffer(event.currentTarget)}
               onPlay={() => { setIsPlaying(true); setStatus("playing"); }}
-              onPlaying={() => setIsBuffering(false)}
+              onPlaying={(event) => { clearSeekRecoveryIfReady(event.currentTarget); setIsBuffering(false); }}
               onWaiting={() => setIsBuffering(true)}
-              onCanPlay={() => setIsBuffering(false)}
+              onSeeking={() => setIsBuffering(true)}
+              onSeeked={(event) => { setIsBuffering(false); setStatus((current) => current === "buffering at selected time" ? (event.currentTarget.paused ? "paused" : "playing") : current); }}
+              onCanPlay={(event) => { clearSeekRecoveryIfReady(event.currentTarget); setIsBuffering(false); }}
               onPause={() => { setIsPlaying(false); setIsBuffering(false); setStatus((current) => current === "playing" ? "paused" : current); }}
               onEnded={() => { setIsPlaying(false); setIsBuffering(false); setStatus("finished"); }}
               onError={(event) => handlePlaybackError(event.currentTarget)}
