@@ -42,6 +42,8 @@ The player can display subtitles from matching `.srt`, `.vtt`, `.ass`, or `.ssa`
 
 The player has 10-second skip buttons, a buffered timeline, fullscreen mode, and a Settings menu for subtitles and playback speed. Click the video to pause or play. When the player has keyboard focus, Space or K toggles playback, Left/Right skips 10 seconds, M mutes, and F toggles fullscreen.
 
+In fullscreen on pointer devices, the translucent controls appear when the pointer reaches the bottom of the screen. They stay visible while the Settings menu is open or a control receives keyboard focus. On touch devices, the controls remain visible.
+
 The browser saves the last selected torrent and video file in local storage with no expiration date. When the visitor returns, **Reopen** reconnects the torrent and opens that file from the beginning. This selection belongs to that browser profile; it does not sync across devices and is removed if the visitor clears the site's data. The backend can still release idle torrent connections to stay within its server limits, then reconnect them when the visitor reopens the file.
 
 Only search for and stream content you have permission to access.

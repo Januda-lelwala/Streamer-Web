@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type FocusEvent, type FormEvent, type KeyboardEvent, type PointerEvent } from "react";
 
 type Result = { name: string; size: string; seeds: number; peers: number; files: number; magnet: string };
 type SearchResponse = { results: Result[]; page: number; totalPages: number; totalResults: number; query: string };
@@ -144,6 +144,8 @@ export default function Home() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [isBuffering, setIsBuffering] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [showFullscreenControls, setShowFullscreenControls] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
   const [isMuted, setIsMuted] = useState(false);
   const [volume, setVolume] = useState(1);
@@ -162,7 +164,10 @@ export default function Home() {
   useEffect(() => { setSavedSelection(loadSavedSelection()); }, []);
 
   useEffect(() => {
-    const updateFullscreen = () => setIsFullscreen(document.fullscreenElement === surfaceRef.current);
+    const updateFullscreen = () => {
+      setIsFullscreen(document.fullscreenElement === surfaceRef.current);
+      setShowFullscreenControls(false);
+    };
     document.addEventListener("fullscreenchange", updateFullscreen);
     return () => document.removeEventListener("fullscreenchange", updateFullscreen);
   }, []);
@@ -208,6 +213,8 @@ export default function Home() {
     setCompatibleRetry(0);
     setIsPlaying(false);
     setIsBuffering(false);
+    setShowFullscreenControls(false);
+    setSettingsOpen(false);
     setBufferedAhead(0);
     setStats({ progress: 0, downloaded: 0, speed: 0, peers: 0 });
     setStatus("idle");
@@ -366,6 +373,16 @@ export default function Home() {
   function toggleFullscreen() {
     if (document.fullscreenElement === surfaceRef.current) void document.exitFullscreen();
     else void surfaceRef.current?.requestFullscreen();
+  }
+
+  function handlePlayerPointerMove(event: PointerEvent<HTMLDivElement>) {
+    if (!isFullscreen || event.pointerType === "touch") return;
+    const bottom = event.currentTarget.getBoundingClientRect().bottom;
+    setShowFullscreenControls(bottom - event.clientY <= 130);
+  }
+
+  function handleControlsBlur(event: FocusEvent<HTMLDivElement>) {
+    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setShowFullscreenControls(false);
   }
 
   function handlePlayerKeyDown(event: KeyboardEvent<HTMLDivElement>) {
@@ -558,7 +575,7 @@ export default function Home() {
 
         {active && chosen && <section className="player-panel" aria-label="Now streaming" ref={playerRef}>
           <div className="section-heading player-heading"><div><p className="eyebrow">NOW PLAYING</p><h2>{chosen.name}</h2><p className="player-source">From {active.name}</p></div><button className="close-button" onClick={stop}>Stop stream ✕</button></div>
-          <div className="player-surface" ref={surfaceRef} tabIndex={0} onKeyDown={handlePlayerKeyDown} aria-label="Video player. Space to play or pause, arrow keys to skip 10 seconds, M to mute, F for fullscreen">
+          <div className={`player-surface${showFullscreenControls || settingsOpen ? " fullscreen-controls-visible" : ""}`} ref={surfaceRef} tabIndex={0} onKeyDown={handlePlayerKeyDown} onPointerMove={handlePlayerPointerMove} onPointerLeave={() => setShowFullscreenControls(false)} aria-label="Video player. Space to play or pause, arrow keys to skip 10 seconds, M to mute, F for fullscreen">
             <div className="video-wrap"><video ref={videoRef} playsInline onClick={() => { surfaceRef.current?.focus(); togglePlayback(); }} onDoubleClick={toggleFullscreen}
               onLoadedMetadata={(event) => { if (!duration && Number.isFinite(event.currentTarget.duration)) setDuration(event.currentTarget.duration); }}
               onTimeUpdate={(event) => { setPlayhead((compatibleAudio ? sourceStart : 0) + event.currentTarget.currentTime); updatePlaybackBuffer(event.currentTarget); }}
@@ -574,11 +591,11 @@ export default function Home() {
               {!isPlaying && !isBuffering && !needsAttention && <button type="button" className="video-center-play" onClick={togglePlayback} aria-label="Play video">▶</button>}
               {isBuffering && <div className="video-loading" role="status" aria-label="Video buffering"><span className="loading-ring" /></div>}
               {activeCaptions && <div className="video-captions" aria-live="off">{activeCaptions}</div>}</div>
-            <div className="player-controls">
+            <div className="player-controls" onFocusCapture={() => { if (isFullscreen) setShowFullscreenControls(true); }} onBlurCapture={handleControlsBlur}>
               <div className="timeline-row">
                 <span className="player-time">{formatTime(timelinePosition)}</span>
                 <input className="player-seek" type="range" aria-label="Seek video" min={0} max={duration && duration > 0 ? duration : 0} step={0.1} value={timelinePosition} disabled={!duration}
-                style={{ background: `linear-gradient(to right, #59d8f7 0% ${progressPercent}%, #54758b ${progressPercent}% ${bufferedPercent}%, #27394a ${bufferedPercent}% 100%)` }}
+                style={{ background: `linear-gradient(to right, #f5f5f5 0% ${progressPercent}%, #929292 ${progressPercent}% ${bufferedPercent}%, #454545 ${bufferedPercent}% 100%)` }}
                 onChange={(event) => setScrubTime(Number(event.currentTarget.value))}
                 onPointerUp={(event) => seekTo(Number(event.currentTarget.value))}
                 onKeyUp={(event) => { if (["ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"].includes(event.key)) seekTo(Number(event.currentTarget.value)); }}
@@ -595,7 +612,7 @@ export default function Home() {
                   <input className="player-volume" type="range" aria-label="Volume" min={0} max={1} step={0.05} value={isMuted ? 0 : volume} onChange={(event) => { const next = Number(event.currentTarget.value); setVolume(next); setIsMuted(next === 0); if (videoRef.current) { videoRef.current.volume = next; videoRef.current.muted = next === 0; } }} />
                 </div>
                 <div className="transport-options">
-                  <details className="player-settings"><summary aria-label="Playback settings">⚙ <span>Settings</span></summary><div className="settings-menu">
+                  <details className="player-settings" onToggle={(event) => setSettingsOpen(event.currentTarget.open)}><summary aria-label="Playback settings">⚙ <span>Settings</span></summary><div className="settings-menu">
                     <label>Subtitles<select aria-label="Subtitles" value={selectedSubtitle} onChange={(event) => { const value = event.currentTarget.value; setSelectedSubtitle(value); setSubtitleCues(value === "local" ? localSubtitleCues : []); setSubtitleError(""); }}>
                       <option value="">Off</option>
                       {matchingSubtitles.map((file) => <option key={file.index} value={`file:${file.index}`}>{file.name}</option>)}
