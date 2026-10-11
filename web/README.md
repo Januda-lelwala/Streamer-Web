@@ -40,6 +40,8 @@ The backend needs reachable BitTorrent peers, and the video must use a codec sup
 
 The player can display subtitles from matching `.srt`, `.vtt`, `.ass`, or `.ssa` files in the torrent, supported embedded text subtitle tracks, or a local `.srt`/`.vtt` file. Choose a track in the Subtitles menu or use **Load SRT/VTT**. Torrent subtitles are converted to WebVTT by the backend with ffmpeg; image-based subtitle tracks are not supported. Local subtitle files stay in the browser and are cleared when the stream is stopped.
 
+The player has 10-second skip buttons, a buffered timeline, fullscreen mode, and a Settings menu for subtitles and playback speed. Click the video to pause or play. When the player has keyboard focus, Space or K toggles playback, Left/Right skips 10 seconds, M mutes, and F toggles fullscreen.
+
 The browser saves the last selected torrent and video file in local storage with no expiration date. When the visitor returns, **Reopen** reconnects the torrent and opens that file from the beginning. This selection belongs to that browser profile; it does not sync across devices and is removed if the visitor clears the site's data. The backend can still release idle torrent connections to stay within its server limits, then reconnect them when the visitor reopens the file.
 
 Only search for and stream content you have permission to access.

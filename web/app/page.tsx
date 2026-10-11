@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 
 type Result = { name: string; size: string; seeds: number; peers: number; files: number; magnet: string };
 type SearchResponse = { results: Result[]; page: number; totalPages: number; totalResults: number; query: string };
@@ -142,6 +142,9 @@ export default function Home() {
   const [sourceStart, setSourceStart] = useState(0);
   const [compatibleRetry, setCompatibleRetry] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isBuffering, setIsBuffering] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [playbackSpeed, setPlaybackSpeed] = useState(1);
   const [isMuted, setIsMuted] = useState(false);
   const [volume, setVolume] = useState(1);
   const [bufferedAhead, setBufferedAhead] = useState(0);
@@ -157,6 +160,12 @@ export default function Home() {
   const resumeListenerRef = useRef<(() => void) | null>(null);
 
   useEffect(() => { setSavedSelection(loadSavedSelection()); }, []);
+
+  useEffect(() => {
+    const updateFullscreen = () => setIsFullscreen(document.fullscreenElement === surfaceRef.current);
+    document.addEventListener("fullscreenchange", updateFullscreen);
+    return () => document.removeEventListener("fullscreenchange", updateFullscreen);
+  }, []);
 
   useEffect(() => {
     if (!active || !chosen) return;
@@ -198,6 +207,7 @@ export default function Home() {
     setSourceStart(0);
     setCompatibleRetry(0);
     setIsPlaying(false);
+    setIsBuffering(false);
     setBufferedAhead(0);
     setStats({ progress: 0, downloaded: 0, speed: 0, peers: 0 });
     setStatus("idle");
@@ -244,6 +254,7 @@ export default function Home() {
     setSourceStart(0);
     setCompatibleRetry(0);
     setIsPlaying(false);
+    setIsBuffering(true);
     setBufferedAhead(0);
     setStatus("buffering");
     setStreamError("");
@@ -310,8 +321,11 @@ export default function Home() {
       videoRef.current.src = `/api/torrents/${chosen.hash}/files/${chosen.index}${compatibleAudio ? `/compatible?start=${sourceStart.toFixed(3)}&retry=${compatibleRetry}` : ""}`;
       videoRef.current.muted = isMuted;
       videoRef.current.volume = volume;
-      void videoRef.current.play().then(() => setStatus("playing")).catch(() => setStatus("ready — press play"));
+      videoRef.current.playbackRate = playbackSpeed;
+      setIsBuffering(true);
+      void videoRef.current.play().then(() => setStatus("playing")).catch(() => { setIsBuffering(false); setStatus("ready — press play"); });
     } catch (error) {
+      setIsBuffering(false);
       setStreamError(error instanceof Error ? error.message : "This file cannot play in your browser.");
       setStatus("playback unavailable");
     }
@@ -323,6 +337,7 @@ export default function Home() {
     playbackRetryRef.current = { attempts: 0, position: target };
     setScrubTime(null);
     setPlayhead(target);
+    setIsBuffering(true);
     const video = videoRef.current;
     if (!video) return;
     const canConvert = /\.(mkv|avi|mov|mp4|m4v)$/i.test(chosen.name);
@@ -337,6 +352,30 @@ export default function Home() {
       video.currentTime = target;
       setStatus("buffering at selected time");
     }
+  }
+
+  function togglePlayback() {
+    const video = videoRef.current;
+    if (!video) return;
+    if (video.paused) { setIsBuffering(true); void video.play().catch(() => { setIsBuffering(false); setStatus("ready — press play"); }); }
+    else video.pause();
+  }
+
+  function skipBy(seconds: number) { seekTo(playhead + seconds); }
+
+  function toggleFullscreen() {
+    if (document.fullscreenElement === surfaceRef.current) void document.exitFullscreen();
+    else void surfaceRef.current?.requestFullscreen();
+  }
+
+  function handlePlayerKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.target !== event.currentTarget) return;
+    const key = event.key.toLowerCase();
+    if (key === " " || key === "k") { event.preventDefault(); togglePlayback(); }
+    else if (key === "arrowleft") { event.preventDefault(); skipBy(-10); }
+    else if (key === "arrowright") { event.preventDefault(); skipBy(10); }
+    else if (key === "m") { event.preventDefault(); setIsMuted((muted) => { if (videoRef.current) videoRef.current.muted = !muted; return !muted; }); }
+    else if (key === "f") { event.preventDefault(); toggleFullscreen(); }
   }
 
   function updatePlaybackBuffer(video: HTMLVideoElement) {
@@ -395,6 +434,8 @@ export default function Home() {
     };
     setStreamError(messages[error.code] || "Video playback stopped unexpectedly.");
     setStatus("playback stopped");
+    setIsPlaying(false);
+    setIsBuffering(false);
   }
 
   async function start(result: Result, reopen?: SavedSelection) {
@@ -488,6 +529,10 @@ export default function Home() {
     return directory === videoDirectory && (stem === videoStem || stem.startsWith(`${videoStem}.`) || stem.startsWith(`${videoStem}-`) || files.length === 1);
   });
   const activeCaptions = selectedSubtitle && subtitleCues.filter((cue) => cue.start <= playhead && playhead < cue.end).map((cue) => cue.text).join("\n");
+  const timelinePosition = Math.min(scrubTime ?? playhead, duration || 0);
+  const progressPercent = duration ? Math.min(100, timelinePosition / duration * 100) : 0;
+  const bufferedPercent = duration ? Math.max(progressPercent, Math.min(100, (playhead + bufferedAhead) / duration * 100)) : 0;
+  const needsAttention = /unavailable|stopped|failed/.test(status);
 
   return (
     <div className="shell">
@@ -512,44 +557,70 @@ export default function Home() {
         </section>
 
         {active && chosen && <section className="player-panel" aria-label="Now streaming" ref={playerRef}>
-          <div className="section-heading"><div><p className="eyebrow">NOW STREAMING</p><h2>{active.name}</h2></div><button className="close-button" onClick={stop}>Stop stream ✕</button></div>
-          <div className="player-surface" ref={surfaceRef}>
-            <div className="video-wrap"><video ref={videoRef} playsInline
+          <div className="section-heading player-heading"><div><p className="eyebrow">NOW PLAYING</p><h2>{chosen.name}</h2><p className="player-source">From {active.name}</p></div><button className="close-button" onClick={stop}>Stop stream ✕</button></div>
+          <div className="player-surface" ref={surfaceRef} tabIndex={0} onKeyDown={handlePlayerKeyDown} aria-label="Video player. Space to play or pause, arrow keys to skip 10 seconds, M to mute, F for fullscreen">
+            <div className="video-wrap"><video ref={videoRef} playsInline onClick={() => { surfaceRef.current?.focus(); togglePlayback(); }} onDoubleClick={toggleFullscreen}
               onLoadedMetadata={(event) => { if (!duration && Number.isFinite(event.currentTarget.duration)) setDuration(event.currentTarget.duration); }}
               onTimeUpdate={(event) => { setPlayhead((compatibleAudio ? sourceStart : 0) + event.currentTarget.currentTime); updatePlaybackBuffer(event.currentTarget); }}
               onProgress={(event) => updatePlaybackBuffer(event.currentTarget)}
               onPlay={() => { setIsPlaying(true); setStatus("playing"); }}
-              onPause={() => setIsPlaying(false)}
-              onEnded={() => { setIsPlaying(false); setStatus("finished"); }}
+              onPlaying={() => setIsBuffering(false)}
+              onWaiting={() => setIsBuffering(true)}
+              onCanPlay={() => setIsBuffering(false)}
+              onPause={() => { setIsPlaying(false); setIsBuffering(false); setStatus((current) => current === "playing" ? "paused" : current); }}
+              onEnded={() => { setIsPlaying(false); setIsBuffering(false); setStatus("finished"); }}
               onError={(event) => handlePlaybackError(event.currentTarget)}
-            /><div className="video-status">{status}</div>{activeCaptions && <div className="video-captions" aria-live="off">{activeCaptions}</div>}</div>
+            /><div className={`video-status${needsAttention ? " has-error" : ""}`}><span className="status-dot" />{isBuffering ? "Buffering…" : status}</div>
+              {!isPlaying && !isBuffering && !needsAttention && <button type="button" className="video-center-play" onClick={togglePlayback} aria-label="Play video">▶</button>}
+              {isBuffering && <div className="video-loading" role="status" aria-label="Video buffering"><span className="loading-ring" /></div>}
+              {activeCaptions && <div className="video-captions" aria-live="off">{activeCaptions}</div>}</div>
             <div className="player-controls">
-              <button type="button" aria-label={isPlaying ? "Pause video" : "Play video"} onClick={() => { const video = videoRef.current; if (!video) return; if (video.paused) void video.play(); else video.pause(); }}>{isPlaying ? "Ⅱ" : "▶"}</button>
-              <span className="player-time">{formatTime(scrubTime ?? playhead)}</span>
-              <input className="player-seek" type="range" aria-label="Seek video" min={0} max={duration && duration > 0 ? duration : 0} step={0.1} value={Math.min(scrubTime ?? playhead, duration || 0)} disabled={!duration}
+              <div className="timeline-row">
+                <span className="player-time">{formatTime(timelinePosition)}</span>
+                <input className="player-seek" type="range" aria-label="Seek video" min={0} max={duration && duration > 0 ? duration : 0} step={0.1} value={timelinePosition} disabled={!duration}
+                style={{ background: `linear-gradient(to right, #59d8f7 0% ${progressPercent}%, #54758b ${progressPercent}% ${bufferedPercent}%, #27394a ${bufferedPercent}% 100%)` }}
                 onChange={(event) => setScrubTime(Number(event.currentTarget.value))}
                 onPointerUp={(event) => seekTo(Number(event.currentTarget.value))}
                 onKeyUp={(event) => { if (["ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"].includes(event.key)) seekTo(Number(event.currentTarget.value)); }}
-              />
-              <span className="player-time">{duration === null ? "Loading…" : formatTime(duration)}</span>
-              <button type="button" aria-label={isMuted ? "Unmute" : "Mute"} onClick={() => { const next = !isMuted; setIsMuted(next); if (videoRef.current) videoRef.current.muted = next; }}>{isMuted ? "🔇" : "🔊"}</button>
-              <input className="player-volume" type="range" aria-label="Volume" min={0} max={1} step={0.05} value={volume} onChange={(event) => { const next = Number(event.currentTarget.value); setVolume(next); setIsMuted(next === 0); if (videoRef.current) { videoRef.current.volume = next; videoRef.current.muted = next === 0; } }} />
-              <select aria-label="Subtitles" value={selectedSubtitle} onChange={(event) => { const value = event.currentTarget.value; setSelectedSubtitle(value); setSubtitleCues(value === "local" ? localSubtitleCues : []); setSubtitleError(""); }}>
-                <option value="">Subtitles off</option>
-                {matchingSubtitles.map((file) => <option key={file.index} value={`file:${file.index}`}>{file.name}</option>)}
-                {embeddedSubtitles.map((track) => <option key={track.index} value={`embedded:${track.index}`}>{track.title || track.language || `Track ${track.index}`} (embedded)</option>)}
-                {localSubtitleName && <option value="local">{localSubtitleName} (local)</option>}
-              </select>
-              <label className="subtitle-upload">Load SRT/VTT<input type="file" accept=".srt,.vtt,text/vtt" onChange={(event) => { void loadLocalSubtitle(event.currentTarget.files?.[0]); event.currentTarget.value = ""; }} /></label>
-              <select aria-label="Playback speed" defaultValue="1" onChange={(event) => { if (videoRef.current) videoRef.current.playbackRate = Number(event.currentTarget.value); }}><option value="0.75">0.75×</option><option value="1">1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option></select>
-              <button type="button" aria-label="Fullscreen" onClick={() => void surfaceRef.current?.requestFullscreen()}>⛶</button>
+                />
+                <span className="player-time">{duration === null ? "--:--" : formatTime(duration)}</span>
+              </div>
+              <div className="transport-row">
+                <div className="transport-main">
+                  <button type="button" className="transport-button" aria-label="Back 10 seconds" title="Back 10 seconds (←)" disabled={!duration} onClick={() => skipBy(-10)}>↺ <small>10</small></button>
+                  <button type="button" className="transport-button play-button" aria-label={isPlaying ? "Pause video" : "Play video"} title="Play or pause (Space)" onClick={togglePlayback}>{isPlaying ? "Ⅱ" : "▶"}</button>
+                  <button type="button" className="transport-button" aria-label="Forward 10 seconds" title="Forward 10 seconds (→)" disabled={!duration} onClick={() => skipBy(10)}>↻ <small>10</small></button>
+                  <span className="transport-divider" />
+                  <button type="button" className="transport-button mute-button" aria-label={isMuted ? "Unmute" : "Mute"} title="Mute (M)" onClick={() => { const next = !isMuted; setIsMuted(next); if (videoRef.current) videoRef.current.muted = next; }}>{isMuted ? "🔇" : "🔊"}</button>
+                  <input className="player-volume" type="range" aria-label="Volume" min={0} max={1} step={0.05} value={isMuted ? 0 : volume} onChange={(event) => { const next = Number(event.currentTarget.value); setVolume(next); setIsMuted(next === 0); if (videoRef.current) { videoRef.current.volume = next; videoRef.current.muted = next === 0; } }} />
+                </div>
+                <div className="transport-options">
+                  <details className="player-settings"><summary aria-label="Playback settings">⚙ <span>Settings</span></summary><div className="settings-menu">
+                    <label>Subtitles<select aria-label="Subtitles" value={selectedSubtitle} onChange={(event) => { const value = event.currentTarget.value; setSelectedSubtitle(value); setSubtitleCues(value === "local" ? localSubtitleCues : []); setSubtitleError(""); }}>
+                      <option value="">Off</option>
+                      {matchingSubtitles.map((file) => <option key={file.index} value={`file:${file.index}`}>{file.name}</option>)}
+                      {embeddedSubtitles.map((track) => <option key={track.index} value={`embedded:${track.index}`}>{track.title || track.language || `Track ${track.index}`} (embedded)</option>)}
+                      {localSubtitleName && <option value="local">{localSubtitleName} (local)</option>}
+                    </select></label>
+                    <label className="subtitle-upload">＋ Load SRT or VTT<input type="file" accept=".srt,.vtt,text/vtt" onChange={(event) => { void loadLocalSubtitle(event.currentTarget.files?.[0]); event.currentTarget.value = ""; }} /></label>
+                    <label>Playback speed<select aria-label="Playback speed" value={playbackSpeed} onChange={(event) => { const next = Number(event.currentTarget.value); setPlaybackSpeed(next); if (videoRef.current) videoRef.current.playbackRate = next; }}><option value="0.75">0.75×</option><option value="1">Normal (1×)</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option></select></label>
+                  </div></details>
+                  <button type="button" className="transport-button fullscreen-button" aria-label={isFullscreen ? "Exit fullscreen" : "Fullscreen"} title="Fullscreen (F)" onClick={toggleFullscreen}>{isFullscreen ? "⊟" : "⛶"}</button>
+                </div>
+              </div>
             </div>
           </div>
+          <p className="player-hint">Click the video to pause or play. Focus the player for Space, ←/→, M and F shortcuts.</p>
           {subtitleError && <p className="error" role="alert">{subtitleError}</p>}
           {!compatibleAudio && /\.(mkv|avi|mov|mp4|m4v)$/i.test(chosen.name) && <button type="button" className="secondary-button" onClick={() => { const now = videoRef.current?.currentTime || 0; playbackRetryRef.current = { attempts: 0, position: now }; setSourceStart(now); setPlayhead(now); setCompatibleAudio(true); setStatus("converting audio"); setStreamError(""); }}>Picture plays but no sound? Play with AAC audio</button>}
           {compatibleAudio && <><p className="note">Audio is converted to stereo AAC while you watch. Use the timeline to seek to another point.</p><button type="button" className="secondary-button" onClick={() => { playbackRetryRef.current = { attempts: 0, position: 0 }; setCompatibleAudio(false); setSourceStart(0); setPlayhead(0); setStatus("buffering original stream"); setStreamError(""); }}>Try original stream from start</button></>}
           {streamError && <p className="error" role="alert">{streamError}</p>}
-          <div className="stream-meta"><span><b>{Math.round(stats.progress)}%</b> of this file cached</span><span><b>{formatBytes(stats.downloaded)}</b> of {formatBytes(chosen.length)} on server</span>{stats.downloaded >= chosen.length ? <span>File cached on server</span> : <span><b>{formatBytes(stats.speed)}/s</b> torrent download</span>}<span><b>{Math.round(bufferedAhead)}s</b> buffered for playback</span><span><b>{stats.peers}</b> peers</span></div>
+          <div className="stream-health" aria-label="Stream details">
+            <div className="cache-info"><div><strong>Download cache</strong><span>{formatBytes(stats.downloaded)} of {formatBytes(chosen.length)} cached</span></div><b>{Math.round(stats.progress)}%</b><div className="cache-bar"><span style={{ width: `${Math.max(0, Math.min(100, stats.progress))}%` }} /></div></div>
+            <div className="health-stat"><strong>{Math.round(bufferedAhead)}s</strong><span>video ahead</span></div>
+            <div className="health-stat"><strong>{stats.peers}</strong><span>peers</span></div>
+            <div className="health-stat"><strong>{stats.downloaded >= chosen.length ? "Cached" : `${formatBytes(stats.speed)}/s`}</strong><span>{stats.downloaded >= chosen.length ? "on server" : "download speed"}</span></div>
+          </div>
           <a className="magnet-link" href={active.magnet}>Open magnet in desktop client ↗</a>
         </section>}
 
